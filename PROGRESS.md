@@ -33,9 +33,11 @@
 - ✅ Landing page (hero, features, CTA)
 
 ### Phase 2: PDF Pipeline
-- ⬜ File upload UI (drag-and-drop, progress indicator)
-- ⬜ Backend upload endpoint (multipart/form-data → Supabase Storage)
-- ⬜ PDF chunking (PyMuPDF or pdfplumber + text splitter)
+- ✅ File upload UI (drag-and-drop, progress indicator)
+- ✅ Backend upload endpoint (multipart/form-data → Supabase Storage)
+- ✅ PDF metadata extraction (PyMuPDF — title, authors, year, page count)
+- ✅ Supabase Postgres papers table (migration SQL provided)
+- ⬜ PDF chunking (PyMuPDF text splitter + page-aware chunks)
 - ⬜ Embedding generation (configurable model, stored in ChromaDB)
 - ⬜ Dashboard layout (sidebar nav, workspace list)
 - ⬜ Workspaces (create / rename / delete, per-user isolation)
@@ -81,6 +83,108 @@
 ---
 
 ## Completed Task Log
+
+### [Phase 2.1] PDF upload system — frontend + backend
+**Date**: 2026-04-13
+**What was done**:
+
+**Database:**
+- Created `supabase/migrations/001_papers.sql`. Schema: `papers` table with columns `id` (uuid PK), `user_id` (FK → auth.users), `title`, `authors`, `year`, `filename`, `storage_path`, `file_size_bytes`, `page_count`, `status` (enum: uploaded/processing/ready/error), `error_message`, `created_at`, `updated_at`.
+- RLS enabled with four policies (SELECT/INSERT/UPDATE/DELETE) scoped to `auth.uid() = user_id`.
+- `set_updated_at()` trigger auto-updates `updated_at` on every row modification.
+- Indexed on `(user_id, created_at DESC)` for fast per-user listing.
+
+**Backend:**
+- Added `PyMuPDF==1.24.3` and `python-multipart==0.0.9` to `requirements.txt`.
+- Added `SUPABASE_SERVICE_ROLE_KEY` field to `config.py` (service-role bypasses RLS for server-side inserts/queries).
+- Created `backend/app/services/pdf_service.py`:
+  - `extract_metadata(doc, filename)` — tries embedded PDF metadata first, then first-page text heuristics (largest-font block as title, comma/email patterns as authors, regex for year), filename stem as final fallback.
+  - `extract_pages(doc)` — returns `[{page, text}]` per page (ready for Phase 2.2 chunking).
+- Created `backend/app/services/storage_service.py`:
+  - `upload_pdf(client, user_id, filename, file_bytes)` — uploads to `papers` bucket at `{user_id}/{uuid}_{filename}`, returns storage path.
+  - `delete_pdf(client, storage_path)` — removes from storage.
+- Created `backend/app/api/papers.py` with three endpoints:
+  - `POST /api/v1/papers/upload` — validates MIME type + PDF magic bytes + 50 MB limit, parses metadata with PyMuPDF, uploads raw bytes to Supabase Storage, inserts row into `papers` table. Returns `list[PaperOut]`.
+  - `GET /api/v1/papers/` — lists all papers for the authenticated user, newest first.
+  - `DELETE /api/v1/papers/{id}` — verifies ownership, deletes from storage (best-effort) and DB.
+- Updated `backend/app/main.py` to register the papers router at `/api/v1`.
+
+**Frontend:**
+- Created `frontend/components/upload-zone.tsx` (Client Component):
+  - Drag-and-drop zone with `onDragOver`/`onDrop` native events; also supports click-to-browse.
+  - Visual state: default (dashed border) → drag-over (violet glow + lighter bg).
+  - Files validated client-side: `.pdf` extension + 50 MB limit.
+  - Per-file upload via `XMLHttpRequest` (not `fetch`) to capture `upload.onprogress` events.
+  - Upload queue UI: shows each file with name, animated progress bar (violet fill), status icon (queued/uploading/done/error).
+  - Files uploaded sequentially to avoid overwhelming the backend.
+  - On success, new papers prepended to the papers list without a page reload.
+  - Papers grid: 1–3 column responsive grid. Each card shows title (2-line clamp), authors, year badge, page count badge, file size badge, date. Hover reveals a delete button that calls `DELETE /api/v1/papers/{id}`.
+  - Empty state with dashed border + prompt when no papers exist.
+  - Loading spinner while initial papers fetch is in progress.
+- Updated `frontend/app/dashboard/page.tsx`:
+  - Server Component — reads user name from `user_metadata.full_name` or email prefix.
+  - Renders page header + `<UploadZone />`.
+
+**Files created**:
+- `supabase/migrations/001_papers.sql`
+- `backend/app/services/__init__.py`
+- `backend/app/services/pdf_service.py`
+- `backend/app/services/storage_service.py`
+- `backend/app/api/papers.py`
+- `frontend/components/upload-zone.tsx`
+
+**Files modified**:
+- `backend/requirements.txt` — added PyMuPDF, python-multipart
+- `backend/app/core/config.py` — added SUPABASE_SERVICE_ROLE_KEY
+- `backend/app/main.py` — registered papers_router
+- `frontend/app/dashboard/page.tsx` — replaced placeholder with UploadZone
+- `.env.example` — added SUPABASE_SERVICE_ROLE_KEY
+
+**Key decisions**:
+- Service-role key used for all backend Supabase operations (Storage upload + DB insert/query). JWT `sub` claim from the user's token is used as `user_id`, maintaining per-user isolation without relying on RLS.
+- `XMLHttpRequest` chosen over `fetch` for upload: `fetch` does not expose upload progress via `ReadableStream` in all environments; XHR's `upload.onprogress` is universal.
+- Files uploaded one at a time (sequential queue) for simplicity; concurrent uploads can be added later.
+- PDF metadata extraction is heuristic — good enough for Phase 2.1. Users can edit metadata in a future phase.
+- `delete_pdf` in storage is best-effort (wrapped in try/except): if storage delete fails, the DB row is still deleted to keep the UI consistent.
+- Build verified clean: `✓ Compiled successfully`, TypeScript passed, 5 routes.
+
+**Required manual Supabase setup** (before this feature works):
+1. Run `supabase/migrations/001_papers.sql` in the Supabase SQL editor.
+2. Create a Storage bucket named `papers` (Dashboard → Storage → New bucket, name: `papers`, public: OFF).
+3. Set `SUPABASE_SERVICE_ROLE_KEY` in `.env` (Dashboard → Project Settings → API → service_role key).
+
+**Deviations from plan**: Added `DELETE /api/v1/papers/{id}` endpoint (not originally requested but needed for paper management UI).
+
+**Blockers**: None.
+
+---
+
+### [Phase 2.1] Bug fix — FastAPI 204 DELETE startup crash
+**Date**: 2026-04-13
+**What was done**:
+- Backend crashed on startup with `AssertionError: is_body_allowed_for_status_code` in `papers.py`.
+- Root cause: `@router.delete` with `status_code=204` and return type `-> None`. FastAPI's startup validation fails because HTTP 204 does not allow a body, but FastAPI tries to configure JSON serialization for the `None` response.
+- Fix applied to `backend/app/api/papers.py`:
+  - Added `Response` to the FastAPI imports.
+  - Added `response_class=Response` to the `@router.delete` decorator.
+  - Changed return type from `-> None` to `-> Response`.
+  - Added explicit `return Response(status_code=status.HTTP_204_NO_CONTENT)` at end of function.
+- Also updated `requirements.txt`: `PyMuPDF==1.24.3` → `PyMuPDF==1.27.2.2` (1.24.3 has no pre-built wheel for Python 3.14); `pydantic==2.7.1` → `pydantic>=2.7.1` (actual installed version is 2.13.0 which has a Python 3.14 wheel).
+- Backend startup verified: all 10 routes registered cleanly, no assertion errors.
+
+**Files modified**:
+- `backend/app/api/papers.py` — DELETE endpoint response_class, return type, explicit return
+- `backend/requirements.txt` — PyMuPDF version bump, pydantic loosened pin
+
+**Key decisions**:
+- `response_class=Response` disables FastAPI's automatic JSON body setup for the route, which is required when returning 204.
+- Explicit `return Response(status_code=204)` rather than `return None` so the response object is unambiguous.
+
+**Deviations from plan**: None.
+
+**Blockers**: None.
+
+---
 
 ### [Phase 1] Landing page — hero, features, CTA
 **Date**: 2026-04-13
@@ -284,19 +388,26 @@ The **backend** (`backend/`) is a FastAPI app. All config is loaded from `.env` 
 
 **ChromaDB** is configured in docker-compose.yml — not yet used by any backend code.
 
+**What exists right now (Phase 2.1 complete):**
+- Dashboard at `/dashboard` with drag-and-drop PDF upload zone.
+- Backend `POST /api/v1/papers/upload` — validates, extracts metadata via PyMuPDF, uploads to Supabase Storage, inserts into `papers` table.
+- Backend `GET /api/v1/papers/` — lists user's papers.
+- Backend `DELETE /api/v1/papers/{id}` — removes paper from storage + DB.
+- `papers` table in Supabase (SQL migration at `supabase/migrations/001_papers.sql`).
+- Papers displayed as responsive card grid in the dashboard.
+
 **What does NOT exist yet:**
-- PDF upload, chunking, or embedding (Phase 2)
+- PDF chunking and embedding (Phase 2.2) — `status` stays `"uploaded"`, not `"ready"` yet
 - Any LLM integration (Phase 3+)
 - Chat, citations, or visualizations (Phase 4–6)
-- Demo workspace (Phase 7 — "Try Demo" button currently links to `/login`)
+- Dashboard sidebar / workspace grouping (later Phase 2)
+- Demo workspace (Phase 7)
 
-**Phase 1 is now fully complete. What to do next (Phase 2):**
-1. File upload UI — drag-and-drop component with progress indicator, connects to backend.
-2. Backend upload endpoint — `POST /api/v1/upload`, multipart/form-data, saves PDF to Supabase Storage.
-3. PDF chunking — PyMuPDF or pdfplumber, text splitter, chunk metadata.
-4. Embedding generation — configurable embedding model, upsert chunks into ChromaDB.
-5. Dashboard layout — sidebar nav, workspace list.
-6. Workspaces — create / rename / delete, per-user isolation in Supabase.
+**What to do next (Phase 2.2):**
+1. PDF chunking — use `extract_pages()` already in `pdf_service.py`, split into ~512-token chunks with 50-token overlap, store chunk text + page number + paper_id.
+2. Embedding generation — embed each chunk using a configurable model (sentence-transformers or OpenAI), upsert into ChromaDB with metadata.
+3. Update paper `status` → `"processing"` then `"ready"` (or `"error"`) after the pipeline runs.
+4. This can be triggered synchronously on upload (Phase 2.2) or via a background task (Phase 3+).
 
 **Required manual Supabase setup before auth works:**
 1. Enable Google: Dashboard → Auth → Providers → Google → enter OAuth app credentials.
@@ -334,7 +445,12 @@ cd backend  && pip install -r requirements.txt && uvicorn app.main:app --reload
 | `frontend/app/page.tsx` | Landing page — hero (animated glow + gradient text), 3 feature cards, How It Works, CTA |
 | `frontend/app/(auth)/login/page.tsx` | Login page — Google + GitHub OAuth buttons, passes redirectTo through flow |
 | `frontend/app/auth/callback/route.ts` | OAuth callback route handler — exchanges code for session, open-redirect guarded |
-| `frontend/app/dashboard/page.tsx` | Dashboard placeholder — protected page, shows user email (Phase 2 will flesh out) |
+| `frontend/app/dashboard/page.tsx` | Dashboard — Server Component header, renders UploadZone client component |
+| `frontend/components/upload-zone.tsx` | Client Component — drag-drop PDF upload, per-file XHR progress, papers card grid, delete |
+| `supabase/migrations/001_papers.sql` | SQL migration — papers table, RLS policies, updated_at trigger, user_id index |
+| `backend/app/services/pdf_service.py` | PDF parsing — extract_metadata (embedded + heuristic), extract_pages (per-page text) |
+| `backend/app/services/storage_service.py` | Supabase Storage helpers — upload_pdf, delete_pdf (service-role client) |
+| `backend/app/api/papers.py` | Papers API — POST /upload, GET /, DELETE /{id} (all auth-protected) |
 | `frontend/lib/utils.ts` | `cn()` utility — clsx + tailwind-merge |
 | `frontend/lib/supabase/client.ts` | Supabase browser client — used in Client Components (`createBrowserClient`) |
 | `frontend/lib/supabase/server.ts` | Supabase server client — used in Server Components + Route Handlers (`createServerClient`) |

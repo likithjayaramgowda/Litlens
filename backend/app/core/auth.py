@@ -1,54 +1,60 @@
 from typing import Annotated
 
-import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from supabase import create_client, Client
 
 from app.core.config import settings
 
 _bearer = HTTPBearer()
+_supabase_client: Client | None = None
+
+
+def _get_client() -> Client:
+    global _supabase_client
+    if _supabase_client is None:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Supabase is not configured on the server.",
+            )
+        _supabase_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+    return _supabase_client
 
 
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
 ) -> dict:
     """
-    FastAPI dependency that validates a Supabase-issued JWT.
+    Validate a Supabase JWT by calling supabase.auth.get_user(token).
 
-    Supabase signs JWTs with HS256 using the project's JWT secret
-    (Dashboard → Project Settings → API → JWT Secret).
-
-    Usage:
-        @router.get("/protected")
-        async def protected(user: Annotated[dict, Depends(get_current_user)]):
-            return {"sub": user["sub"]}
+    Supabase verifies the token server-side and returns the user object.
+    Returns a dict with at least {"sub": user_id, "email": ...}.
     """
     token = credentials.credentials
 
-    if not settings.SUPABASE_JWT_SECRET:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="SUPABASE_JWT_SECRET is not configured on the server.",
-        )
-
     try:
-        payload = jwt.decode(
-            token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
-    except jwt.ExpiredSignatureError as exc:
+        sb = _get_client()
+        response = sb.auth.get_user(token)
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired.",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token.",
+            detail=f"Token validation failed: {exc}",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
-    return payload
+    if not response or not response.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = response.user
+    return {
+        "sub": user.id,
+        "email": user.email,
+        "role": user.role,
+    }
