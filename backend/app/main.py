@@ -8,6 +8,19 @@ from app.api.routes import router
 from app.api.papers import router as papers_router
 from app.core.config import settings
 
+# ── Logging setup ─────────────────────────────────────────────────────────────
+# Uvicorn configures its own loggers but does NOT add handlers to the root
+# logger or to app.* loggers. Wire them up explicitly so all logger.info/error
+# calls from app.services.* are visible in the terminal.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:     %(name)s — %(message)s",
+)
+# Quiet down noisy third-party libraries.
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+logging.getLogger("chromadb").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(

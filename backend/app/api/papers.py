@@ -1,23 +1,29 @@
 """
 Paper management endpoints.
 
-POST  /api/v1/papers/upload   — upload one or more PDFs (auth required)
-GET   /api/v1/papers/         — list the caller's papers (auth required)
-DELETE /api/v1/papers/{id}    — delete a paper (auth required, owner only)
+POST   /api/v1/papers/upload   — upload one or more PDFs (auth required)
+GET    /api/v1/papers/         — list the caller's papers (auth required)
+DELETE /api/v1/papers/{id}     — delete a paper (auth required, owner only)
+
+After a successful upload, a FastAPI BackgroundTask runs the chunking +
+embedding pipeline asynchronously, updating the paper status from
+'uploaded' → 'processing' → 'ready' (or 'error').
 """
 from __future__ import annotations
 
 from typing import Annotated, Any
 
 import fitz  # PyMuPDF
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel
 from supabase import create_client, Client
 
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.services.pdf_service import extract_metadata
+from app.services.processing_service import process_paper, reprocess_paper
 from app.services.storage_service import delete_pdf, upload_pdf
+from app.services.embedding_service import delete_paper_chunks
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -61,6 +67,7 @@ class PaperOut(BaseModel):
     summary="Upload one or more PDF files",
 )
 async def upload_papers(
+    background_tasks: BackgroundTasks,
     user: Annotated[dict, Depends(get_current_user)],
     files: list[UploadFile] = File(..., description="PDF files to upload"),
 ) -> list[PaperOut]:
@@ -70,10 +77,13 @@ async def upload_papers(
     For each file:
     1. Validate MIME type and PDF magic bytes.
     2. Parse metadata (title, authors, year, page count) with PyMuPDF.
-    3. Upload raw bytes to Supabase Storage bucket ``papers``.
-    4. Insert a row into the ``papers`` Postgres table.
+    3. Upload raw bytes to Supabase Storage bucket ``Papers``.
+    4. Insert a row into the ``papers`` Postgres table (status='uploaded').
+    5. Enqueue a BackgroundTask to chunk, embed, and index the paper
+       (status transitions: uploaded → processing → ready | error).
 
-    Returns the list of created paper records.
+    Returns the list of created paper records immediately (status='uploaded').
+    The frontend should poll GET /papers/ until status='ready'.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
@@ -154,7 +164,20 @@ async def upload_papers(
                 detail=f"'{fname}': database insert failed — {exc}",
             ) from exc
 
-        results.append(PaperOut(**db_result.data[0]))
+        paper = PaperOut(**db_result.data[0])
+        results.append(paper)
+
+        # ── 5. Enqueue background processing ─────────────────────────────────
+        # Pass raw bytes so the background task can re-open the PDF for text
+        # extraction without another Storage round-trip.
+        background_tasks.add_task(
+            process_paper,
+            sb=sb,
+            paper_id=paper.id,
+            user_id=user_id,
+            paper_title=paper.title,
+            file_bytes=raw,
+        )
 
     return results
 
@@ -165,9 +188,17 @@ async def upload_papers(
     summary="List the current user's papers",
 )
 async def list_papers(
+    background_tasks: BackgroundTasks,
     user: Annotated[dict, Depends(get_current_user)],
 ) -> list[PaperOut]:
-    """Return all papers owned by the authenticated user, newest first."""
+    """
+    Return all papers owned by the authenticated user, newest first.
+
+    Any papers still in status='uploaded' (i.e. uploaded before the embedding
+    pipeline existed, or whose background task never ran) are automatically
+    re-queued: their status is immediately flipped to 'processing' so that
+    subsequent polls do not re-trigger them.
+    """
     user_id: str = user["sub"]
     sb = _supabase()
 
@@ -179,7 +210,6 @@ async def list_papers(
             .order("created_at", desc=True)
             .execute()
         )
-        return [PaperOut(**row) for row in db_result.data]
     except HTTPException:
         raise
     except Exception as exc:
@@ -188,26 +218,109 @@ async def list_papers(
             detail=f"Database query failed — {exc}",
         ) from exc
 
+    papers: list[PaperOut] = []
+    for row in db_result.data:
+        paper = PaperOut(**row)
+
+        if paper.status == "uploaded":
+            # Atomically flip to 'processing' before enqueueing so the next
+            # poll does not trigger this branch again.
+            try:
+                sb.table("papers").update({"status": "processing"}).eq("id", paper.id).execute()
+                paper = PaperOut(**{**row, "status": "processing"})
+            except Exception:
+                pass  # best-effort; will retry next poll
+
+            background_tasks.add_task(
+                reprocess_paper,
+                sb=sb,
+                paper_id=paper.id,
+                user_id=user_id,
+                paper_title=paper.title,
+                storage_path=row["storage_path"],
+            )
+
+        papers.append(paper)
+
+    return papers
+
+
+@router.post(
+    "/{paper_id}/reprocess",
+    response_model=PaperOut,
+    summary="Re-trigger chunking + embedding for a paper",
+)
+async def reprocess_paper_endpoint(
+    paper_id: str,
+    background_tasks: BackgroundTasks,
+    user: Annotated[dict, Depends(get_current_user)],
+) -> PaperOut:
+    """
+    Manually re-queue a paper for chunking and embedding.
+
+    Useful for retrying papers whose status is 'error' or 'uploaded'.
+    Returns the updated paper record (status='processing') immediately;
+    the pipeline runs in the background.
+    """
+    user_id: str = user["sub"]
+    sb = _supabase()
+
+    result = (
+        sb.table("papers")
+        .select("*")
+        .eq("id", paper_id)
+        .maybe_single()
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper not found.")
+
+    if result.data["user_id"] != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed.")
+
+    if result.data["status"] == "processing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Paper is already being processed.",
+        )
+
+    sb.table("papers").update({"status": "processing"}).eq("id", paper_id).execute()
+    paper = PaperOut(**{**result.data, "status": "processing"})
+
+    background_tasks.add_task(
+        reprocess_paper,
+        sb=sb,
+        paper_id=paper.id,
+        user_id=user_id,
+        paper_title=paper.title,
+        storage_path=result.data["storage_path"],
+    )
+
+    return paper
+
 
 @router.delete(
     "/{paper_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    summary="Delete a paper and its stored file",
+    summary="Delete a paper, its stored file, and its embeddings",
 )
 async def delete_paper(
     paper_id: str,
     user: Annotated[dict, Depends(get_current_user)],
 ) -> Response:
     """
-    Delete the paper record **and** the raw PDF from Supabase Storage.
+    Delete the paper record, raw PDF from Supabase Storage, and all
+    ChromaDB chunks.
 
     Returns 404 if the paper does not exist or belongs to a different user.
+    Storage and ChromaDB deletions are best-effort — they do not block the
+    DB row deletion.
     """
     user_id: str = user["sub"]
     sb = _supabase()
 
-    # Fetch the row first to verify ownership and get the storage path.
     result = (
         sb.table("papers")
         .select("id, user_id, storage_path")
@@ -222,11 +335,14 @@ async def delete_paper(
     if result.data["user_id"] != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed.")
 
-    # Remove from storage (best-effort — don't fail the delete if storage errors).
+    # Remove PDF from storage (best-effort).
     try:
         delete_pdf(sb, result.data["storage_path"])
     except Exception:
         pass
+
+    # Remove embeddings from ChromaDB (best-effort).
+    delete_paper_chunks(user_id=user_id, paper_id=paper_id)
 
     sb.table("papers").delete().eq("id", paper_id).execute()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

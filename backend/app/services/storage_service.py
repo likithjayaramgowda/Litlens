@@ -34,6 +34,11 @@ def upload_pdf(
     return path
 
 
+def download_pdf(client: Client, storage_path: str) -> bytes:
+    """Download a PDF from storage and return its raw bytes."""
+    return client.storage.from_(BUCKET).download(storage_path)
+
+
 def delete_pdf(client: Client, storage_path: str) -> None:
     """Remove a single file from storage.  Used by the delete-paper endpoint."""
     client.storage.from_(BUCKET).remove([storage_path])

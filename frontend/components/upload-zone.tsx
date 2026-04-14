@@ -13,9 +13,11 @@ import {
   FileText,
   HardDrive,
   Loader2,
+  RefreshCw,
   Trash2,
   UploadCloud,
   XCircle,
+  Zap,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -23,6 +25,7 @@ import { createClient } from "@/lib/supabase/client";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+const POLL_INTERVAL_MS = 3_000;          // poll every 3 s while any paper is processing
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,7 +48,7 @@ interface Paper {
   filename: string;
   file_size_bytes: number;
   page_count: number;
-  status: string;
+  status: string; // uploaded | processing | ready | error
   created_at: string;
 }
 
@@ -63,6 +66,42 @@ function formatDate(iso: string): string {
     month: "short",
     day: "numeric",
   });
+}
+
+// ── Status badge ──────────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: string }) {
+  if (status === "processing") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Indexing…
+      </span>
+    );
+  }
+  if (status === "ready") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-400">
+        <Zap className="h-3 w-3" />
+        Ready
+      </span>
+    );
+  }
+  if (status === "error") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-xs text-red-400">
+        <XCircle className="h-3 w-3" />
+        Error
+      </span>
+    );
+  }
+  // "uploaded" — queued for processing, shown briefly before backend picks it up
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-500">
+      <Loader2 className="h-3 w-3 animate-spin" />
+      Queued
+    </span>
+  );
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -101,7 +140,7 @@ function UploadRow({ entry }: { entry: UploadEntry }) {
           <p className="mt-0.5 text-xs text-red-400">{entry.errorMsg}</p>
         )}
         {entry.status === "done" && (
-          <p className="mt-0.5 text-xs text-emerald-400">Uploaded successfully</p>
+          <p className="mt-0.5 text-xs text-emerald-400">Uploaded — indexing in background</p>
         )}
         {entry.status === "queued" && (
           <p className="mt-0.5 text-xs text-slate-500">Queued…</p>
@@ -118,15 +157,21 @@ function UploadRow({ entry }: { entry: UploadEntry }) {
 function PaperCard({
   paper,
   onDelete,
+  onStatusChange,
 }: {
   paper: Paper;
   onDelete: (id: string) => void;
+  onStatusChange: (id: string, status: string) => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const supabase = createClient();
 
-  async function handleDelete(token: string) {
+  async function handleDelete() {
     setDeleting(true);
     try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token ?? "";
       await fetch(`${API_URL}/api/v1/papers/${paper.id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
@@ -137,28 +182,62 @@ function PaperCard({
     }
   }
 
-  // We need the token here; hoist to parent if this becomes unwieldy.
-  const supabase = createClient();
+  async function handleReprocess() {
+    setRetrying(true);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token ?? "";
+      const r = await fetch(`${API_URL}/api/v1/papers/${paper.id}/reprocess`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) {
+        onStatusChange(paper.id, "processing");
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  const isProcessing = paper.status === "processing" || paper.status === "uploaded";
+  const canRetry = paper.status === "error";
 
   return (
     <div className="group relative flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-5 transition-all duration-200 hover:border-slate-700 hover:bg-slate-900/90">
-      {/* Delete button */}
-      <button
-        onClick={async () => {
-          const { data } = await supabase.auth.getSession();
-          const token = data.session?.access_token ?? "";
-          handleDelete(token);
-        }}
-        disabled={deleting}
-        className="absolute right-3 top-3 rounded-md p-1.5 text-slate-600 opacity-0 transition-all hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100 disabled:pointer-events-none"
-        aria-label="Delete paper"
-      >
-        {deleting ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <Trash2 className="h-3.5 w-3.5" />
+      {/* Action buttons — top-right corner */}
+      <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition-all group-hover:opacity-100">
+        {canRetry && (
+          <button
+            onClick={handleReprocess}
+            disabled={retrying}
+            className="rounded-md p-1.5 text-slate-600 hover:bg-amber-500/10 hover:text-amber-400 disabled:pointer-events-none"
+            aria-label="Retry indexing"
+            title="Retry indexing"
+          >
+            {retrying ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+          </button>
         )}
-      </button>
+        {!isProcessing && (
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="rounded-md p-1.5 text-slate-600 hover:bg-red-500/10 hover:text-red-400 disabled:pointer-events-none"
+            aria-label="Delete paper"
+          >
+            {deleting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
+      </div>
 
       {/* Header */}
       <div className="flex items-start gap-3">
@@ -179,6 +258,8 @@ function PaperCard({
 
       {/* Meta row */}
       <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge status={paper.status} />
+
         {paper.year && (
           <span className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
             <Calendar className="h-3 w-3" />
@@ -232,7 +313,7 @@ export default function UploadZone() {
     });
   }, []);
 
-  // ── Fetch existing papers ───────────────────────────────────────────────────
+  // ── Fetch existing papers on mount ──────────────────────────────────────────
   useEffect(() => {
     if (!token) return;
     fetch(`${API_URL}/api/v1/papers/`, {
@@ -243,6 +324,33 @@ export default function UploadZone() {
       .catch(() => {/* backend may not be running yet */})
       .finally(() => setLoadingPapers(false));
   }, [token]);
+
+  // ── Poll while any paper is processing ─────────────────────────────────────
+  // Fires every 3 s as long as at least one paper has status 'uploaded' or
+  // 'processing'. Stops automatically once all reach 'ready' or 'error'.
+  useEffect(() => {
+    if (!token) return;
+    const needsPoll = papers.some(
+      (p) => p.status === "processing" || p.status === "uploaded"
+    );
+    if (!needsPoll) return;
+
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch(`${API_URL}/api/v1/papers/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (r.ok) {
+          const fresh: Paper[] = await r.json();
+          setPapers(fresh);
+        }
+      } catch {
+        // silently ignore transient network errors
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => clearInterval(id);
+  }, [token, papers]);
 
   // ── Upload helpers ──────────────────────────────────────────────────────────
 
@@ -304,8 +412,6 @@ export default function UploadZone() {
   /** Fetch a guaranteed-fresh access token, refreshing the session if needed. */
   async function getFreshToken(): Promise<string> {
     const supabase = createClient();
-    // getUser() hits the Supabase server and refreshes the session if expired.
-    // After it resolves the session in storage is up to date.
     await supabase.auth.getUser();
     const { data } = await supabase.auth.getSession();
     return data.session?.access_token ?? "";
@@ -328,6 +434,7 @@ export default function UploadZone() {
         }
         const created = await xhrUpload(file, entry.id, tok);
         patchEntry(entry.id, { status: "done", progress: 100 });
+        // Prepend new papers; they start as 'uploaded' and polling will update them.
         setPapers((prev) => [...created, ...prev]);
       } catch (err) {
         patchEntry(entry.id, {
@@ -384,13 +491,22 @@ export default function UploadZone() {
   };
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleFiles(Array.from(e.target.files ?? []));
-    e.target.value = ""; // allow re-selecting the same file
+    e.target.value = "";
   };
 
   const handleDelete = (id: string) =>
     setPapers((prev) => prev.filter((p) => p.id !== id));
 
+  const handleStatusChange = (id: string, newStatus: string) =>
+    setPapers((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, status: newStatus } : p))
+    );
+
   // ── Render ──────────────────────────────────────────────────────────────────
+
+  const processingCount = papers.filter(
+    (p) => p.status === "processing" || p.status === "uploaded"
+  ).length;
 
   return (
     <div className="space-y-8">
@@ -464,11 +580,19 @@ export default function UploadZone() {
           <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
             Your Papers
           </h3>
-          {papers.length > 0 && (
-            <span className="text-xs text-slate-600">
-              {papers.length} {papers.length === 1 ? "paper" : "papers"}
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {processingCount > 0 && (
+              <span className="flex items-center gap-1.5 text-xs text-amber-400">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Indexing {processingCount} {processingCount === 1 ? "paper" : "papers"}…
+              </span>
+            )}
+            {papers.length > 0 && (
+              <span className="text-xs text-slate-600">
+                {papers.length} {papers.length === 1 ? "paper" : "papers"}
+              </span>
+            )}
+          </div>
         </div>
 
         {loadingPapers ? (
@@ -484,6 +608,7 @@ export default function UploadZone() {
                 key={paper.id}
                 paper={paper}
                 onDelete={handleDelete}
+                onStatusChange={handleStatusChange}
               />
             ))}
           </div>
