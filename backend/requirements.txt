@@ -12,3 +12,7 @@ python-dotenv==1.0.1
 httpx==0.27.0
 langchain-text-splitters>=0.2.0
 sentence-transformers>=3.0.0
+# ── Phase 3: LLM routing ──────────────────────────────────────────────────────
+# openai SDK handles both OpenRouter (free-tier) and DeepSeek BYOK —
+# both are OpenAI-compatible APIs. No other LLM SDKs needed.
+openai>=1.30.0

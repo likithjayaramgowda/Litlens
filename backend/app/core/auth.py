@@ -57,4 +57,5 @@ async def get_current_user(
         "sub": user.id,
         "email": user.email,
         "role": user.role,
+        "user_metadata": user.user_metadata or {},
     }

@@ -10,12 +10,12 @@
 | Field | Value |
 |---|---|
 | **Project** | LitLens — AI-powered document search & analysis |
-| **Current Phase** | Phase 2: PDF Pipeline (Phase 1 complete ✅) |
+| **Current Phase** | Phase 3.5: OpenRouter free-tier + quota system (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅) |
 | **Frontend** | Next.js 14, App Router, TypeScript, Tailwind CSS, shadcn/ui |
 | **Backend** | FastAPI (Python 3.11), pydantic-settings |
 | **Vector DB** | ChromaDB |
 | **Auth / DB** | Supabase (auth + Postgres) |
-| **LLM Layer** | BYOK — OpenAI / Anthropic / Gemini / Groq / Ollama (Phase 3) |
+| **LLM Layer** | OpenRouter free-tier (3 model tiers, one server key) + optional DeepSeek BYOK |
 | **Infrastructure** | Docker Compose (local), Render (backend), Vercel (frontend) |
 
 ---
@@ -43,10 +43,17 @@
 - ⬜ Workspaces (create / rename / delete, per-user isolation)
 
 ### Phase 3: BYOK LLM Router
-- ⬜ Provider abstraction layer (OpenAI / Anthropic / Gemini / Groq / Ollama)
-- ⬜ API key storage (encrypted, per-user in Supabase)
-- ⬜ LLM router — select active provider + model at request time
-- ⬜ Settings UI (add/remove provider keys, set default model)
+- ✅ Provider abstraction layer (OpenAI / Anthropic / Gemini / Groq / Ollama)
+- ✅ LLM router — select active provider + model via request headers
+- ✅ Settings UI (provider picker, masked key input, model dropdown, test connection)
+- ✅ OpenRouter free-tier: one OPENROUTER_API_KEY, 28+ free models, auto-fallback to openrouter/auto on 429
+- ✅ Three model tiers: Quick (GLM-4.5 Air), Deep Thinking (DeepSeek R1), Long Context (Nemotron 120B)
+- ✅ Server-side API key (OPENROUTER_API_KEY) — never exposed to browser
+- ✅ Per-user daily quota: 50 queries/day (10 for demo users), tracked in Supabase
+- ✅ BYOK narrowed to DeepSeek only (V3 / R1) — optional advanced settings
+- ✅ QuotaBadge component in dashboard header with mini progress bar
+- ✅ Settings modal redesigned as unobtrusive "Advanced" gear button
+- ⬜ API key storage (encrypted, per-user in Supabase) — deferred; sessionStorage used instead
 
 ### Phase 4: Cross-Paper RAG Chat
 - ⬜ Retrieval engine (multi-doc semantic search over ChromaDB)
@@ -83,6 +90,236 @@
 ---
 
 ## Completed Task Log
+
+### [Phase 3.5b] OpenRouter simplification
+**Date**: 2026-04-15
+**What was done**:
+
+Replaced direct Gemini + Groq SDK integration with OpenRouter (single API key, OpenAI-compatible). Simpler dependency tree, broader free model access, automatic fallback.
+
+**Backend:**
+- `backend/app/core/config.py`: Removed `GEMINI_API_KEY`, `GROQ_API_KEY`; added `OPENROUTER_API_KEY`.
+- `backend/app/services/llm_router.py` (rewrite):
+  - Single `_stream_openai_compat(base_url, api_key, model, messages, max_tokens, extra_headers)` handles all OpenAI-compatible endpoints.
+  - `TIERS` list — 3 entries: `quick` (zhipu/glm-4.5-air:free), `deep` (deepseek/deepseek-r1:free), `long-context` (nvidia/nemotron-3-super-120b-a12b:free).
+  - `stream_free_tier(messages, max_tokens, tier)` — calls OpenRouter with the tier's model; on any error falls back to `openrouter/auto` (OpenRouter picks an available free model).
+  - All OpenRouter requests include `HTTP-Referer: https://litlens.app` and `X-Title: LitLens` headers.
+  - `stream_byok` now also handles Ollama via OpenAI-compat `/v1` endpoint (no separate httpx NDJSON path).
+- `backend/app/api/llm.py`: Added `GET /api/v1/llm/tiers` (public) returning tier catalogue.
+- `backend/requirements.txt`: Removed `google-generativeai>=0.7.0`, `anthropic>=0.25.0`, `groq>=0.9.0`. Only `openai>=1.30.0` needed.
+- `backend/.env.example`: Updated to `OPENROUTER_API_KEY`.
+- `.env`: Renamed `OPEN_ROUTER_KEY` → `OPENROUTER_API_KEY` to match config.
+
+**Frontend:**
+- `frontend/components/settings-modal.tsx`: Updated free-tier notice copy to mention OpenRouter and the tier toggle.
+
+**Key decisions:**
+- OpenRouter is OpenAI-SDK-compatible, so zero new dependencies. The same `AsyncOpenAI` client handles OpenRouter, DeepSeek, and Ollama via different `base_url` values.
+- `openrouter/auto` as fallback: OpenRouter dynamically routes to whichever free model has capacity. Better than a hardcoded secondary list.
+- 3 tiers instead of 5-provider rotation: Users get a meaningful choice (speed vs depth vs context length) rather than invisible infrastructure rotation.
+- Tier toggle is frontend-only state; the chosen tier ID is sent to the Phase 4 chat endpoint as a parameter.
+
+**Files modified:** `config.py`, `llm_router.py`, `llm.py` (API), `requirements.txt`, `.env`, `.env.example`, `settings-modal.tsx`
+
+**Blockers:** None.
+
+---
+
+### [Phase 3.5] Free-tier LLM auto-rotation + daily quota system
+**Date**: 2026-04-15
+**What was done**:
+
+**Architecture change — replaced BYOK-only with free-tier + optional BYOK:**
+- LitLens now works out-of-the-box with no user setup. Free-tier providers are tried in order; rate-limited providers are skipped automatically.
+- BYOK is narrowed to DeepSeek only, presented as an optional "Advanced Settings" for users who want better reasoning.
+
+**Backend — modified files:**
+- `backend/app/core/config.py`: Added `GEMINI_API_KEY`, `GROQ_API_KEY` (server-side keys), `DAILY_QUERY_LIMIT=50`, `DEMO_QUERY_LIMIT=10`.
+- `backend/app/core/auth.py`: `get_current_user` now also returns `user_metadata` dict so quota service can detect demo users.
+- `backend/app/services/llm_router.py` (full rewrite):
+  - Removed BYOK for OpenAI, Anthropic (not used in free tier or BYOK).
+  - `_free_chain()` — returns ordered list of `(label, provider, model, api_key)` tuples: Gemini 2.0 Flash-Lite → Gemini 2.0 Flash → Groq Llama 4 Scout → Groq Llama 3.3 70B → Groq Qwen3-32B.
+  - `_is_rate_limit(exc)` — detects 429/quota errors by inspecting exception class name and message string.
+  - `stream_free_tier(messages, max_tokens)` — probes first token of each provider; on 429 falls through to next; logs which provider served the request.
+  - `_stream_deepseek(model, api_key, messages, max_tokens)` — uses OpenAI SDK with `base_url="https://api.deepseek.com"`.
+  - `stream_byok(provider, model, api_key, messages, max_tokens)` — for user BYOK (currently DeepSeek + Ollama).
+  - `test_connection(provider, model, api_key)` — updated; dispatches to `stream_byok`.
+  - `BYOK_PROVIDERS` dict — now only contains DeepSeek.
+- `backend/app/api/llm.py` (rewrite):
+  - Removed `GET /providers` (no longer needed; frontend hardcodes DeepSeek UI).
+  - Added `GET /api/v1/llm/quota` — returns `{used, limit, remaining}` for the authenticated user.
+  - Updated `POST /api/v1/llm/test-connection` — only accepts `deepseek` provider; reads `BYOK_PROVIDERS` for validation.
+
+**Backend — new files:**
+- `backend/app/services/quota_service.py`:
+  - `_service_client()` — cached Supabase service-role client (bypasses RLS).
+  - `is_demo_user(user_dict)` — checks `user_metadata.is_demo`.
+  - `get_quota_info(user_id, is_demo)` — reads `user_query_usage` table; returns `{used, limit, remaining}`. Gracefully returns full quota if table doesn't exist yet.
+  - `increment_usage(user_id)` — calls `increment_query_usage` Postgres RPC (atomic upsert-increment). Returns new count.
+  - `check_quota(user_id, is_demo)` — raises `ValueError` with friendly message if remaining == 0 (used by Phase 4 chat endpoint).
+- `backend/supabase/migrations/003_query_usage.sql`:
+  - Creates `user_query_usage (user_id UUID, date DATE, count INT, PRIMARY KEY (user_id, date))`.
+  - Enables RLS with SELECT-only policy for authenticated users.
+  - Creates `increment_query_usage(p_user_id, p_date)` SECURITY DEFINER function for atomic increments.
+
+**Backend — new files:**
+- `backend/.env.example`: Full template with all env vars including `GEMINI_API_KEY`, `GROQ_API_KEY`, `DAILY_QUERY_LIMIT`, `DEMO_QUERY_LIMIT`.
+
+**Frontend — modified files:**
+- `frontend/components/settings-modal.tsx` (rewrite):
+  - Removed provider sidebar (5 providers → DeepSeek only).
+  - `LLMSettings` interface changed: `{deepseekKey, deepseekModel}` (removed `provider`, `model`, `apiKey`, `ollamaModel`).
+  - Added free-tier info notice inside modal ("LitLens uses free AI models by default...").
+  - Trigger button changed from "LLM Settings" (prominent) to small "Advanced" gear icon.
+  - Added "Use free tier" button to clear the key.
+  - `loadLLMSettings()` still exported for Phase 4 chat — Phase 4 checks `deepseekKey` to decide free-tier vs BYOK.
+- `frontend/app/dashboard/page.tsx`: Imports `QuotaBadge` and renders it alongside the "Advanced" settings trigger in the page header.
+
+**Frontend — new files:**
+- `frontend/components/quota-badge.tsx`:
+  - Client component; fetches `GET /api/v1/llm/quota` on mount.
+  - Displays mini progress bar + `"{remaining}/{limit} queries left"` text.
+  - Color-coded: violet (normal) → amber (≤20%) → red (exhausted).
+  - Silently hides itself if the quota endpoint fails (migration not yet run).
+
+**Files created**:
+- `backend/app/services/quota_service.py`
+- `backend/supabase/migrations/003_query_usage.sql`
+- `backend/.env.example`
+- `frontend/components/quota-badge.tsx`
+
+**Files modified**:
+- `backend/app/core/config.py` — new env vars
+- `backend/app/core/auth.py` — expose user_metadata
+- `backend/app/services/llm_router.py` — full rewrite
+- `backend/app/api/llm.py` — new endpoints
+- `frontend/components/settings-modal.tsx` — full rewrite
+- `frontend/app/dashboard/page.tsx` — QuotaBadge in header
+
+**Key decisions**:
+- **Free-tier first**: Users get immediate value without any setup. The free chain auto-rotates on 429 — no manual intervention needed.
+- **DeepSeek as BYOK**: Chosen because it has the best price-performance ratio among reasoning models; OpenAI/Anthropic BYOK removed to keep the UX simple.
+- **Quota graceful degradation**: If the migration SQL hasn't been run, `get_quota_info` returns full quota and `increment_usage` logs a warning. The app works end-to-end without requiring the migration — quota enforcement is opt-in.
+- **`_is_rate_limit` string-based check**: Avoids importing provider SDKs at module level while still correctly classifying Groq `RateLimitError` and Google `ResourceExhausted`.
+- **`stream_free_tier` first-token probe**: Gets `__anext__()` before starting to yield — if the first token raises 429, the generator is closed immediately and the next provider is tried. Once the first token arrives, the caller is committed to that provider for the stream.
+- **Demo users via `user_metadata`**: Set `{"is_demo": true}` in Supabase admin → user gets 10 queries/day instead of 50. No code changes needed.
+
+**Required migration**:
+Run `backend/supabase/migrations/003_query_usage.sql` in Supabase SQL Editor to enable quota tracking.
+
+**Deviations from plan**:
+- Ollama kept in `_dispatch` (not removed) so it's available for potential future Ollama BYOK support.
+
+**Blockers**: None.
+
+---
+
+### [Phase 3] BYOK LLM Router
+**Date**: 2026-04-14
+**What was done**:
+
+**Backend — new files:**
+- `backend/app/services/llm_router.py`:
+  - `PROVIDER_MODELS` dict — catalogue of every provider with name, models, `needs_key`, `needs_url`, `key_label`, `key_placeholder`.
+  - Per-provider async streaming functions: `_stream_openai`, `_stream_anthropic`, `_stream_google`, `_stream_groq`, `_stream_ollama`. All use lazy imports (provider SDK imported inside the function) to avoid startup cost when a provider isn't used.
+  - `stream_llm(provider, model, api_key, messages, max_tokens)` — public async generator that dispatches to the correct provider. For Ollama, `api_key` carries the base URL; falls back to `http://localhost:11434`.
+  - `test_connection(provider, model, api_key)` — sends `"Reply with just the word 'ok'"`, consumes the first token, cleans up the generator with `aclose()`. Returns `{"ok": True}` or `{"ok": False, "error": "..."}`. Never raises.
+  - Ollama streaming via raw `httpx.AsyncClient` (NDJSON response, `aiter_lines`). All other providers use their official Python SDKs.
+  - Anthropic: system messages extracted and passed via the separate `system=` parameter (Anthropic API requirement). OpenAI/Groq: messages passed as-is. Google: messages converted to Gemini `{"role": "user"|"model", "parts": [...]}` format; system messages prepended to first user turn.
+
+- `backend/app/api/llm.py`:
+  - `GET /api/v1/llm/providers` — public, returns `list[ProviderInfo]` so the frontend can build the UI dynamically. No auth required.
+  - `POST /api/v1/llm/test-connection` — auth required. Reads `X-LLM-Provider`, `X-LLM-Model`, `X-LLM-API-Key` headers. Validates required fields, delegates to `test_connection()`. Returns `{"ok": bool, "error": str | null}`.
+
+**Backend — updated files:**
+- `backend/requirements.txt`: added `openai>=1.30.0`, `anthropic>=0.25.0`, `google-generativeai>=0.7.0`, `groq>=0.9.0`.
+- `backend/app/main.py`: registered `llm_router` at `/api/v1`.
+
+**Frontend — new files:**
+- `frontend/components/settings-modal.tsx` (Client Component):
+  - `SettingsModal` — renders a trigger button ("LLM Settings" + gear icon) and a full-screen modal.
+  - **Provider sidebar**: 5 provider buttons (OpenAI, Anthropic, Google, Groq, Ollama) each with an inline SVG brand icon, coloured chip, and active highlight. Selecting a provider resets the model to its first option.
+  - **Config panel**:
+    - For key providers: `<input type="password">` with eye/eye-off toggle (show/hide key).
+    - For Ollama: URL input (no masking) + free-text model name field (any Ollama model).
+    - Model dropdown with chevron animation and checkmark on selected item. Closes on outside click via `useRef`.
+    - Info tooltip on the key label explaining the key is never stored server-side.
+  - **Test connection**: calls `POST /api/v1/llm/test-connection` with the provider headers. Shows green "Connection successful!" or red error message inline.
+  - **Save**: writes `LLMSettings` to `sessionStorage` under `litlens_llm_settings`. Closes modal.
+  - `loadLLMSettings()` exported for use by chat interface in Phase 4.
+  - Closes on `Escape` key or clicking the backdrop.
+
+**Frontend — updated files:**
+- `frontend/app/dashboard/page.tsx`: imports `<SettingsModal />` and renders it in the page header (flex row, right-aligned). Server Component can render Client Component children.
+
+**Files created**:
+- `backend/app/services/llm_router.py`
+- `backend/app/api/llm.py`
+- `frontend/components/settings-modal.tsx`
+
+**Files modified**:
+- `backend/requirements.txt` — four new LLM SDK deps
+- `backend/app/main.py` — registered llm_router
+- `frontend/app/dashboard/page.tsx` — SettingsModal in header
+
+**Key decisions**:
+- **API key in headers, not body/DB**: key is transmitted only for the lifetime of the HTTP request, never written to any log or database. Server reads it from `X-LLM-API-Key` header which is not logged by default in FastAPI/uvicorn access logs.
+- **sessionStorage (not localStorage)**: key is cleared when the browser tab closes. Intentionally not persisted across sessions — user must re-enter the key each session. This matches the BYOK security model.
+- **Lazy SDK imports**: each provider's SDK is imported inside its streaming function, not at module load. This means a missing SDK (e.g. `google-generativeai` not installed) only fails at call time for that provider, not on startup.
+- **`test_connection` consumes one token then `aclose()`**: avoids generating a full response just to validate the key. `aclose()` in `finally` ensures the underlying HTTP connection is properly cleaned up even if `__anext__` raises.
+- **Ollama uses httpx directly**: avoids a dependency on the `ollama` Python package; httpx is already in the dependency tree. The Ollama `/api/chat` endpoint returns NDJSON (newline-delimited JSON) which we parse line-by-line.
+- **Google Gemini format conversion**: Gemini uses `"model"` instead of `"assistant"` for the AI role, and wraps content in `"parts": [{"text": ...}]`. System messages don't have a Gemini equivalent role — they're prepended to the first user turn.
+- **No Supabase key storage yet**: the original plan included encrypted per-user key storage in Supabase. Deferred — sessionStorage is sufficient for Phase 4 (RAG chat) and avoids the complexity of server-side encryption. Can be added in Phase 3.5 if needed.
+
+**Deviations from plan**:
+- API key storage in Supabase deferred; sessionStorage used instead (documented as backlog item).
+- `GET /api/v1/llm/providers` endpoint added (not in original spec) — makes the frontend independent of hardcoded provider lists.
+
+**Blockers**: None.
+
+---
+
+### [Phase 2.2] Background processing debug + reprocess endpoint
+**Date**: 2026-04-14
+**What was done**:
+
+**Root cause of silent hang**: `.env` had `CHROMA_HOST=chromadb` (the Docker Compose internal service hostname). Running the backend locally, the OS tried to DNS-resolve `chromadb`, found nothing, and timed out after ~15 minutes. The exception was eventually caught by `process_paper`'s try/except but by then the hang had already occurred. No output appeared because `app.*` loggers had no handlers configured — `logging.basicConfig` was never called, so `logger.info/error` calls went nowhere.
+
+**Fixes applied**:
+- **`.env`**: Changed `CHROMA_HOST=chromadb` → `CHROMA_HOST=localhost`. Local dev needs `localhost:8001` (Docker maps container 8000 → host 8001).
+- **`.env.example`**: Updated default to `CHROMA_HOST=localhost, CHROMA_PORT=8001` with comments explaining Docker vs local dev.
+- **`backend/app/main.py`**: Added `logging.basicConfig(level=logging.INFO)` so all `app.*` logger output appears in the terminal. Also quieted noisy third-party loggers (`sentence_transformers`, `chromadb`, `httpx` → WARNING).
+- **`backend/app/services/processing_service.py`**: Added `print(..., flush=True)` at every pipeline stage (start, status flip, PDF open, page extraction, embed_paper call, completion, error with full traceback). `print` guarantees output even when logging is misconfigured.
+- **`backend/app/services/embedding_service.py`**: Added prints before chunking, before model load, before encoding, before ChromaDB connect, before collection create, per-batch upsert progress. Added a **heartbeat probe** inside `_get_chroma()`: after constructing `HttpClient`, immediately calls `client.heartbeat()`. If ChromaDB is unreachable, raises a clear `RuntimeError` with the host:port and instructions — fails in <1 s instead of hanging for 15 minutes.
+
+**Reprocess endpoint + auto-trigger** (also built this session):
+- **`backend/app/services/storage_service.py`**: Added `download_pdf(client, storage_path) -> bytes`.
+- **`backend/app/services/processing_service.py`**: Added `reprocess_paper(sb, paper_id, user_id, paper_title, storage_path)` — downloads PDF from Supabase Storage then runs `process_paper`.
+- **`backend/app/api/papers.py`**:
+  - `GET /api/v1/papers/` now accepts `BackgroundTasks`. For any paper with `status='uploaded'`, atomically updates to `'processing'` in the DB (prevents re-trigger on next poll), then enqueues `reprocess_paper` as a background task. Returns the updated list.
+  - New `POST /api/v1/papers/{paper_id}/reprocess` — manually re-queues a paper in `'uploaded'` or `'error'` state. Returns 409 if already processing.
+- **`frontend/components/upload-zone.tsx`**: Added `RefreshCw` icon import. `PaperCard` now accepts `onStatusChange` prop. Added a "Retry" button (hover-reveal, top-right corner) for papers with `status === 'error'` — calls `/reprocess` and optimistically sets local state to `'processing'`. Delete and retry buttons share a top-right button group.
+
+**Files modified**:
+- `.env` — CHROMA_HOST=localhost
+- `.env.example` — CHROMA_HOST/PORT docs for local vs Docker
+- `backend/app/main.py` — logging.basicConfig, quieted third-party loggers
+- `backend/app/services/processing_service.py` — print statements throughout, reprocess_paper added
+- `backend/app/services/embedding_service.py` — print statements + heartbeat probe in _get_chroma
+- `backend/app/services/storage_service.py` — download_pdf added
+- `backend/app/api/papers.py` — auto-trigger in list_papers, reprocess endpoint
+- `frontend/components/upload-zone.tsx` — Retry button, onStatusChange prop
+
+**Key decisions**:
+- `print(..., flush=True)` preferred over `logger.*` for debug output because it bypasses all logging configuration and is guaranteed to appear regardless of handler setup.
+- Heartbeat probe in `_get_chroma()` caches the client only after a successful heartbeat — a failed client is never stored, so the next call retries the connection.
+- Auto-trigger in `GET /papers/` (not a separate startup event) means papers created before Phase 2.2 are picked up on first dashboard load without any manual action. Status is atomically flipped to `'processing'` before enqueueing to prevent duplicate triggers across polls.
+
+**Deviations from plan**: None.
+
+**Blockers**: None.
+
+---
 
 ### [Phase 2.2] PDF chunking + embedding pipeline
 **Date**: 2026-04-14
@@ -514,9 +751,44 @@ End-to-end integration revealed a series of issues after Phase 2.1 code was writ
 
 **What exists right now:**
 
-The repo is a monorepo with full auth wired up end-to-end.
+The repo is a monorepo with Phases 1, 2, and 3 complete.
 
-The **frontend** (`frontend/`) is a Next.js 14+ App Router app (package.json currently pins `next@^16.2.3`). Auth is handled by `@supabase/ssr`. The middleware (`middleware.ts`) protects `/dashboard` and `/workspace` routes — unauthenticated requests are redirected to `/login`. A sticky Navbar (Server Component) reads the session and shows the user's avatar + Sign out button when logged in, or a Sign in link when not. The login page offers Google and GitHub OAuth. After OAuth, Supabase redirects to `/auth/callback` which exchanges the code for a session cookie and bounces the user to `/dashboard`. The dashboard is currently a placeholder.
+The **frontend** (`frontend/`) is a Next.js 14+ App Router app (package.json currently pins `next@^16.2.3`). Auth is handled by `@supabase/ssr`. The middleware (`middleware.ts`) protects `/dashboard` and `/workspace` routes — unauthenticated requests are redirected to `/login`. A sticky Navbar (Server Component) reads the session and shows the user's avatar + Sign out button when logged in, or a Sign in link when not. The login page offers Google and GitHub OAuth. After OAuth, Supabase redirects to `/auth/callback` which exchanges the code for a session cookie and bounces the user to `/dashboard`. The dashboard shows:
+- Page header with "My Papers" title + **LLM Settings** button (top-right)
+- Drag-and-drop PDF upload zone
+- Papers library grid with per-paper status badges (Queued / Indexing / Ready / Error), retry button for errored papers, and delete button
+
+The **LLM Settings modal** (`components/settings-modal.tsx`) lets users pick a provider (OpenAI, Anthropic, Google, Groq, Ollama), enter their API key (masked, never stored server-side), choose a model, and test the connection. Settings are persisted in `sessionStorage` under `litlens_llm_settings`. `loadLLMSettings()` is exported for the chat interface.
+
+The **backend** (`backend/`) is FastAPI on Python 3.11+. Key modules:
+- `app/core/auth.py` — `get_current_user` dep using `supabase.auth.get_user(token)`
+- `app/api/papers.py` — upload (multipart → Supabase Storage → ChromaDB), list (auto-triggers reprocess for `status='uploaded'`), delete, reprocess
+- `app/api/llm.py` — `GET /providers` (public catalogue), `POST /test-connection` (validates key via headers)
+- `app/services/llm_router.py` — async streaming abstraction over OpenAI / Anthropic / Google / Groq / Ollama
+- `app/services/embedding_service.py` — chunking + sentence-transformers + ChromaDB upsert
+- `app/services/processing_service.py` — background pipeline orchestrator with full print-based debug logging
+
+**Infrastructure**: ChromaDB runs in Docker, exposed on host port 8001. `.env` must have `CHROMA_HOST=localhost CHROMA_PORT=8001` for local dev (not `chromadb` which is the Docker-internal hostname).
+
+**What's next**: Phase 4 — RAG retrieval endpoint + streaming chat UI. Will use `loadLLMSettings()` from the settings modal + `stream_llm()` from the router + ChromaDB semantic search over the user's paper collection.
+
+**File registry** (key files only):
+| File | Purpose |
+|---|---|
+| `frontend/app/dashboard/page.tsx` | Dashboard — server component, renders header + SettingsModal + UploadZone |
+| `frontend/components/upload-zone.tsx` | PDF upload, paper library, status polling, retry button |
+| `frontend/components/settings-modal.tsx` | BYOK LLM settings modal (provider/model/key, test connection) |
+| `frontend/components/navbar.tsx` | Auth-aware navbar (server component) |
+| `backend/app/api/papers.py` | Paper CRUD + upload + reprocess endpoints |
+| `backend/app/api/llm.py` | LLM provider catalogue + test-connection endpoint |
+| `backend/app/services/llm_router.py` | Multi-provider async streaming abstraction |
+| `backend/app/services/embedding_service.py` | Chunking + embedding + ChromaDB storage |
+| `backend/app/services/processing_service.py` | Background pipeline (extract → chunk → embed) |
+| `backend/app/services/storage_service.py` | Supabase Storage upload/download/delete |
+| `backend/app/services/pdf_service.py` | PyMuPDF metadata extraction + page text |
+| `backend/app/core/auth.py` | JWT validation via supabase.auth.get_user |
+| `backend/app/core/config.py` | pydantic-settings (SUPABASE_*, CHROMA_*) |
+| `supabase/migrations/001_papers.sql` | papers table schema + RLS |
 
 The **backend** (`backend/`) is a FastAPI app. All config is loaded from `.env` via pydantic-settings (using an absolute path relative to `config.py` so it works regardless of uvicorn's working directory). `GET /health` is public. `GET /api/v1/ping` is public. `GET /api/v1/me` is protected — it requires a valid Supabase JWT in the `Authorization: Bearer <token>` header. The `get_current_user` dependency in `app/core/auth.py` validates tokens by calling `supabase.auth.get_user(token)` (server-side validation via the Supabase Python client — works for ES256, HS256, or any future algorithm). A global exception handler ensures CORS headers are present even on unhandled 500 responses.
 

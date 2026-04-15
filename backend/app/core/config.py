@@ -31,6 +31,14 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 
+    # ── OpenRouter (server-side, never exposed to users) ─────────────────────
+    # One key gives access to 28+ free models. Get yours at openrouter.ai/keys.
+    OPENROUTER_API_KEY: str = ""
+
+    # ── Per-user daily query limits ───────────────────────────────────────────
+    DAILY_QUERY_LIMIT: int = 50
+    DEMO_QUERY_LIMIT: int = 10
+
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
