@@ -9,6 +9,7 @@ from app.api.papers import router as papers_router
 from app.api.llm import router as llm_router
 from app.api.chat import router as chat_router
 from app.api.projects import router as projects_router
+from app.api.citations import router as citations_router
 from app.core.config import settings
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ app.include_router(papers_router, prefix="/api/v1")
 app.include_router(llm_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(projects_router, prefix="/api/v1")
+app.include_router(citations_router, prefix="/api/v1")
 
 
 @app.get("/health")

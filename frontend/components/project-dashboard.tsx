@@ -11,6 +11,7 @@ import {
   Loader2,
   MessageSquare,
   MoreHorizontal,
+  PenLine,
   Plus,
   Trash2,
   X,
@@ -18,6 +19,7 @@ import {
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import UploadZone from "@/components/upload-zone";
+import WritingEditor from "@/components/writing-editor";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -390,7 +392,9 @@ function ConversationCard({
   );
 }
 
-// ── Project view (papers + chats) ─────────────────────────────────────────────
+// ── Project view (papers + chats + write tabs) ────────────────────────────────
+
+type ProjectTab = "papers" | "chats" | "write";
 
 function ProjectView({
   project,
@@ -401,6 +405,7 @@ function ProjectView({
   onBack: () => void;
   getToken: () => Promise<string>;
 }) {
+  const [activeTab, setActiveTab] = useState<ProjectTab>("papers");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loadingConvs, setLoadingConvs] = useState(true);
   const idx = colorIdx(project.id);
@@ -431,8 +436,14 @@ function ProjectView({
     } catch { /* non-critical */ }
   }
 
+  const tabs: { id: ProjectTab; label: string; icon: React.ReactNode }[] = [
+    { id: "papers", label: "Papers", icon: <BookOpen className="h-4 w-4" /> },
+    { id: "chats",  label: "Chats",  icon: <MessageSquare className="h-4 w-4" /> },
+    { id: "write",  label: "Write",  icon: <PenLine className="h-4 w-4" /> },
+  ];
+
   return (
-    <div className="space-y-10">
+    <div className="space-y-6">
       {/* ── Project header ─────────────────────────────────────────────────── */}
       <div className="flex items-center gap-4">
         <button
@@ -456,70 +467,98 @@ function ProjectView({
         </div>
       </div>
 
-      {/* ── Papers section ─────────────────────────────────────────────────── */}
-      <section>
-        <div className="mb-5 flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <BookOpen className="h-4.5 w-4.5 text-slate-400" />
-            <h3 className="text-base font-semibold text-slate-200">Papers</h3>
-          </div>
-          <div className="h-px flex-1 bg-slate-800" />
-          <span className="text-sm text-slate-500">
-            {project.paper_count} {project.paper_count === 1 ? "paper" : "papers"}
-          </span>
-        </div>
-        <UploadZone projectId={project.id} />
-      </section>
-
-      {/* ── Chats section ──────────────────────────────────────────────────── */}
-      <section>
-        <div className="mb-5 flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <MessageSquare className="h-4.5 w-4.5 text-slate-400" />
-            <h3 className="text-base font-semibold text-slate-200">Chats</h3>
-          </div>
-          <div className="h-px flex-1 bg-slate-800" />
-          <Link
-            href={`/chat?projectId=${project.id}`}
-            className="flex items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 hover:bg-violet-500/20 hover:text-violet-200 transition-colors"
+      {/* ── Tab strip ──────────────────────────────────────────────────────── */}
+      <div className="flex gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium transition-all ${
+              activeTab === tab.id
+                ? "bg-slate-800 text-white shadow-sm"
+                : "text-slate-500 hover:text-slate-300"
+            }`}
           >
-            <Plus className="h-3.5 w-3.5" />
-            New Chat
-          </Link>
-        </div>
+            {tab.icon}
+            {tab.label}
+            {tab.id === "papers" && (
+              <span className={`text-xs ${activeTab === "papers" ? "text-slate-400" : "text-slate-600"}`}>
+                {project.paper_count}
+              </span>
+            )}
+            {tab.id === "chats" && conversations.length > 0 && (
+              <span className={`text-xs ${activeTab === "chats" ? "text-slate-400" : "text-slate-600"}`}>
+                {conversations.length}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
 
-        {loadingConvs ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-5 w-5 animate-spin text-slate-600" />
-          </div>
-        ) : conversations.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 py-14 text-center">
-            <MessageSquare className="mb-3 h-8 w-8 text-slate-700" />
-            <p className="text-base font-medium text-slate-500">No chats yet</p>
-            <p className="mt-1.5 text-sm text-slate-600">
-              Start a conversation to ask questions about this project&apos;s papers.
+      {/* ── Papers tab ─────────────────────────────────────────────────────── */}
+      {activeTab === "papers" && (
+        <section>
+          <UploadZone projectId={project.id} />
+        </section>
+      )}
+
+      {/* ── Chats tab ──────────────────────────────────────────────────────── */}
+      {activeTab === "chats" && (
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-slate-500">
+              {conversations.length} {conversations.length === 1 ? "conversation" : "conversations"}
             </p>
             <Link
               href={`/chat?projectId=${project.id}`}
-              className="mt-5 flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-500 transition-colors"
+              className="flex items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 hover:bg-violet-500/20 hover:text-violet-200 transition-colors"
             >
-              <Plus className="h-4 w-4" />
-              Start first chat
+              <Plus className="h-3.5 w-3.5" />
+              New Chat
             </Link>
           </div>
-        ) : (
-          <div className="space-y-2">
-            {conversations.map((conv) => (
-              <ConversationCard
-                key={conv.id}
-                conv={conv}
-                projectId={project.id}
-                onDelete={() => handleDeleteConversation(conv.id)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+
+          {loadingConvs ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-5 w-5 animate-spin text-slate-600" />
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 py-14 text-center">
+              <MessageSquare className="mb-3 h-8 w-8 text-slate-700" />
+              <p className="text-base font-medium text-slate-500">No chats yet</p>
+              <p className="mt-1.5 text-sm text-slate-600">
+                Start a conversation to ask questions about this project&apos;s papers.
+              </p>
+              <Link
+                href={`/chat?projectId=${project.id}`}
+                className="mt-5 flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-500 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                Start first chat
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {conversations.map((conv) => (
+                <ConversationCard
+                  key={conv.id}
+                  conv={conv}
+                  projectId={project.id}
+                  onDelete={() => handleDeleteConversation(conv.id)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ── Write tab ──────────────────────────────────────────────────────── */}
+      {activeTab === "write" && (
+        <section>
+          <WritingEditor projectId={project.id} />
+        </section>
+      )}
     </div>
   );
 }

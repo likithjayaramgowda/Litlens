@@ -10,7 +10,7 @@
 | Field | Value |
 |---|---|
 | **Project** | LitLens — AI-powered document search & analysis |
-| **Current Phase** | Phase 4 complete + Phase 2.3 complete (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅, Phase 3.5 ✅, Phase 4 ✅, Phase 2.3 ✅) |
+| **Current Phase** | Phase 5 complete (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅, Phase 3.5 ✅, Phase 4 ✅, Phase 2.3 ✅, Phase 5 ✅) |
 | **Frontend** | Next.js 14, App Router, TypeScript, Tailwind CSS, shadcn/ui |
 | **Backend** | FastAPI (Python 3.11), pydantic-settings |
 | **Vector DB** | ChromaDB |
@@ -72,10 +72,11 @@
 - ✅ UI redesign: gradient backgrounds, fade-slide-in message animations, typing indicator, purple gradient user bubbles, coloured source card borders, premium empty state
 
 ### Phase 5: Citation Assistant
-- ⬜ Tiptap rich-text editor integration
-- ⬜ Real-time citation suggestions (trigger on selection / command)
-- ⬜ Citation verification (check claim against source chunks)
-- ⬜ Bibliography formatter (APA / MLA / Chicago / BibTeX export)
+- ✅ Tiptap rich-text editor — headings, bold, italic, lists, blockquote; Write tab per project
+- ✅ Real-time citation suggestions — debounced 2 s, embeds paragraph, LLM rates strong/moderate/weak, Insert Citation button
+- ✅ Citation verification — "Review My Draft" scans full text, paragraph-level correct/weak/wrong/missing status
+- ✅ Bibliography formatter — APA 7, MLA 9, IEEE, Harvard, Chicago; generated from project paper metadata
+- ✅ Drafts persisted to Supabase (drafts table, one per project per user, auto-save every 3 s)
 
 ### Phase 6: Visualizations
 - ⬜ Knowledge graph (D3.js or react-force-graph, concept nodes + edges)
@@ -96,6 +97,22 @@
 - ⬜ Projects page redesign: grid of cards, each card opens a tabbed view with Papers tab + Chats tab
 - ⬜ Smooth message entrance animations; subtle gradient panel backgrounds; premium overall polish pass
 
+### Phase 7.5: Security & Quality Assurance
+- ⬜ Authentication & authorization audit — JWT validation on all endpoints, RLS on all tables, cross-user isolation tests
+- ⬜ API key & secret security — no keys in frontend/git history, BYOK in sessionStorage only
+- ⬜ Input validation & sanitization — PDF magic bytes, filename traversal, chat prompt injection, XSS via markdown, parameterized queries
+- ⬜ Rate limiting & abuse prevention — upload limits, citation limits, IP-based auth rate limiting, CAPTCHA on signup
+- ⬜ CORS & security headers — strict origins, CSP, X-Frame-Options, HSTS, hide server version banners
+- ⬜ Data privacy — account deletion clears all data (ChromaDB too), private storage bucket, LLM disclosure
+- ⬜ Error handling — no stack traces in responses, generic 500 messages, remove all debug print()/console.log()
+- ⬜ Performance & reliability — load test, DB connection pooling, retry with backoff, LLM timeout (60s)
+- ⬜ Dependency security — pip-audit + npm audit, pin all versions, remove unused deps
+- ⬜ Logging & monitoring — structured JSON logs, auth event logging, no PII/keys in logs, request IDs
+- ⬜ Session & token management — expiry, logout clears all state, token refresh, no session fixation
+- ⬜ Frontend security — no secrets in bundle, all API calls send auth token, CSP meta tag
+- ⬜ Testing — integration tests for critical paths, manual pen test (SQLi, XSS, CSRF, IDOR), malformed JWT tests
+- ⬜ Final pre-deployment — remove TODOs, debug endpoints, set DEBUG=False, production Supabase keys, Sentry, UptimeRobot
+
 ### Phase 8: Deployment
 - ⬜ Dockerize backend for Render (production Dockerfile, env config)
 - ⬜ Deploy frontend to Vercel (next.config.js tuning, env vars)
@@ -105,6 +122,75 @@
 ---
 
 ## Completed Task Log
+
+### [Phase 5] Citation Assistant
+**Date**: 2026-04-16
+**What was done**:
+
+Full Citation Assistant built end-to-end: Tiptap editor, LLM-powered suggestions, draft verification, bibliography formatter, and draft persistence.
+
+#### SQL migration
+
+**`backend/supabase/migrations/007_drafts.sql`** (new):
+- `drafts (id, user_id, project_id, title, content, citation_style, created_at, updated_at)`
+- `UNIQUE (user_id, project_id)` — one draft per project per user
+- RLS: SELECT / INSERT / UPDATE / DELETE scoped to `auth.uid() = user_id`
+- Reuses `set_updated_at()` trigger from migration 001
+
+#### Backend — new files
+
+**`backend/app/services/citation_service.py`**:
+- `_llm_json(prompt, max_tokens)` — single non-streaming OpenRouter completion, JSON parsed, strips markdown fences, gracefully returns `{}` on failure
+- `suggest_citations(user_id, paragraph, project_id, citation_style, paper_ids)` — retrieves 8 chunks from ChromaDB (project-scoped), builds compact context block, asks LLM which papers support the text and whether a citation is needed. Returns `[{paper_id, paper_title, page_number, confidence, reason, excerpt, needs_citation}]`
+- `verify_draft(user_id, full_text, project_id, paper_ids)` — splits text into paragraphs, retrieves 20 chunks for full draft context, asks LLM for per-paragraph status: `correct | weak | wrong | missing | ok`. Pads with `"ok"` if LLM returns fewer annotations than paragraphs
+- `format_bibliography(papers, citation_style)` — pure formatting (no LLM) for APA 7, MLA 9, IEEE, Harvard, Chicago
+- `get_draft(user_id, project_id)` → `dict | None`
+- `save_draft(user_id, project_id, title, content, citation_style)` → upsert on `(user_id, project_id)`
+
+**`backend/app/api/citations.py`**:
+- `POST /api/v1/citations/suggest` — auth required; validates project ownership; calls `suggest_citations`
+- `POST /api/v1/citations/verify` — auth required; calls `verify_draft`
+- `GET  /api/v1/citations/drafts/{project_id}` — 404 if no draft yet
+- `PUT  /api/v1/citations/drafts/{project_id}` — upsert draft
+- `POST /api/v1/citations/bibliography` — fetches paper metadata from Supabase, calls `format_bibliography`
+
+#### Backend — modified files
+
+**`backend/app/main.py`**: imported and registered `citations_router` at `/api/v1`.
+
+#### Frontend — new files
+
+**`frontend/components/writing-editor.tsx`** (new Client Component):
+- Tiptap `StarterKit` (headings H1/H2, bold, italic, bullet list, ordered list, blockquote) + `Placeholder` extension
+- Toolbar: H1, H2, paragraph, bold, italic, bullet, ordered, blockquote; citation style dropdown; Review / Bibliography / Save buttons
+- **Auto-suggest**: `onUpdate` debounces 2 s → sends last non-empty paragraph to `POST /citations/suggest` → right sidebar shows confidence-badged suggestion cards (strong/moderate/weak) with paper title, page, reason, excerpt, "Insert citation" button
+- **Insert citation**: formats inline text based on citation style (APA `(Author, Year, p. N)`, MLA `(Author Page)`, IEEE `[N]`, Harvard `(Author Year, p. N)`, Chicago `(Author Year, N)`) and inserts at cursor
+- **Review My Draft**: sends full `editor.getHTML()` to `POST /citations/verify` → sidebar switches to verify mode with colour-coded paragraph annotations (emerald=correct, amber=weak, red=wrong, orange=missing, slate=ok)
+- **Bibliography panel**: `POST /citations/bibliography` → expands below editor with formatted references; Copy to clipboard button
+- **Auto-save**: `onUpdate` debounces 3 s → `PUT /citations/drafts/{projectId}`; manual Save button also available; "Last saved HH:MM:SS" status line
+- **Draft load on mount**: `GET /citations/drafts/{projectId}` on mount → restores title, content, citation style; `editor.commands.setContent(html)` to restore editor state
+- Citation style dropdown: APA / MLA / IEEE / Harvard / Chicago; triggers re-save when changed
+
+#### Frontend — modified files
+
+**`frontend/components/project-dashboard.tsx`**:
+- Imported `PenLine` (lucide), `WritingEditor`
+- Added `ProjectTab = "papers" | "chats" | "write"` type + `activeTab` state to `ProjectView`
+- Replaced the stacked Papers/Chats sections with a 3-tab strip (Papers, Chats, Write)
+- Each tab shows its content conditionally; paper count and chat count shown as secondary labels on tab buttons
+- Write tab renders `<WritingEditor projectId={project.id} />`
+
+**`frontend/package.json`**: added `@tiptap/react`, `@tiptap/pm`, `@tiptap/starter-kit`, `@tiptap/extension-placeholder` (all `^2.4.0`)
+
+**Required setup:**
+1. Run `backend/supabase/migrations/007_drafts.sql` in Supabase SQL Editor
+2. Run `npm install --legacy-peer-deps` in `frontend/` to install Tiptap packages
+
+**Files created:** `007_drafts.sql`, `citation_service.py`, `citations.py`, `writing-editor.tsx`
+**Files modified:** `main.py`, `project-dashboard.tsx`, `package.json`
+**Blockers:** None.
+
+---
 
 ### [Phase 4 — hotfix] OpenRouter fallback + quota table fixes
 **Date**: 2026-04-15
@@ -1101,3 +1187,101 @@ cd backend  && pip install -r requirements.txt && uvicorn app.main:app --reload
 | `backend/app/core/__init__.py` | Package marker |
 | `backend/app/core/config.py` | pydantic-settings `Settings` — SUPABASE_URL, SUPABASE_KEY, SUPABASE_JWT_SECRET, CHROMA_* |
 | `backend/app/core/auth.py` | `get_current_user` FastAPI dependency — validates Supabase JWT via `supabase.auth.get_user(token)` (works for ES256 / any algorithm) |
+
+---
+
+## Phase 7.5 Checklist — Security & QA Audit
+
+> Run this checklist in full before Phase 8 (Deployment). Every item marked ⬜ must be verified or fixed. Do not deploy to production with any item outstanding.
+
+### Authentication & Authorization
+- ⬜ Verify Supabase JWT validation on **every** backend endpoint — no unauthenticated routes except `/health` and `/ping`
+- ⬜ Verify Row-Level Security (RLS) policies on all Supabase tables (`papers`, `projects`, `conversations`, `messages`, `user_query_usage`) — a user must never be able to query another user's data
+- ⬜ Test cross-user data isolation: log in as User A, try to access User B's `paper_id` directly via API — must return 404, not 200
+- ⬜ Verify `project_id` ownership checks on every endpoint — a user must not be able to add or query papers from a project they do not own
+
+### API Key & Secret Security
+- ⬜ `OPENROUTER_API_KEY` must never appear in frontend code, network requests, or browser dev tools — verify via Network tab
+- ⬜ Verify `.env` is in `.gitignore` and no keys have ever been committed to git history
+- ⬜ Run: `git log --all --full-history -p | grep -i "sk-or-v1"` to scan for leaked OpenRouter keys
+- ⬜ If any key was committed, rotate it immediately and purge from git history (`git filter-repo` or BFG)
+- ⬜ BYOK keys (DeepSeek) must only be in `sessionStorage`, never `localStorage`, never written to backend logs
+
+### Input Validation & Sanitization
+- ⬜ PDF upload: strict MIME type check + magic bytes validation (`%PDF-`) enforced server-side (not just extension or Content-Type header)
+- ⬜ PDF upload: 50 MB max size enforced server-side — cannot be bypassed by spoofing Content-Length
+- ⬜ Reject uploads with malicious filenames — path traversal (`../`, absolute paths) must be stripped or rejected
+- ⬜ Chat messages sent to the LLM must be sanitized to prevent prompt injection (strip or escape instruction-override patterns)
+- ⬜ All user input rendered in the UI must pass through a safe markdown renderer (`react-markdown` + `rehype-sanitize`) to prevent XSS
+- ⬜ All Supabase queries use the client's parameterized query API — no raw string concatenation building SQL
+
+### Rate Limiting & Abuse Prevention
+- ⬜ Verify the 50 queries/day limit is enforced server-side (quota check happens in FastAPI, not just displayed in UI)
+- ⬜ Add rate limit on PDF uploads: max 20 uploads/hour per user
+- ⬜ Add rate limit on citation/reprocess endpoints: max 100/hour per user
+- ⬜ Add IP-based rate limiting on authentication endpoints to prevent brute-force attacks
+- ⬜ Add CAPTCHA or proof-of-work on signup to prevent bot account creation
+
+### CORS & Security Headers
+- ⬜ Verify `CORS allow_origins` is strict — production domain only, no wildcard (`*`)
+- ⬜ Add security headers: `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Strict-Transport-Security`, `Referrer-Policy: strict-origin-when-cross-origin`
+- ⬜ Disable server version banners — hide FastAPI/Uvicorn version from response headers
+
+### Data Privacy
+- ⬜ Verify users can delete their account and **all** associated data: papers (DB row + Storage file + ChromaDB chunks), projects, conversations, messages
+- ⬜ Add a Privacy Policy page explaining what data is collected and how it is used
+- ⬜ Add clear in-app disclosure that queries and paper content are sent to OpenRouter / LLM providers
+- ⬜ Confirm uploaded PDFs are stored in a **private** Supabase Storage bucket (not publicly accessible by URL)
+
+### Error Handling & Information Disclosure
+- ⬜ Backend error responses must never expose stack traces, file paths, internal module names, or database schema details to clients
+- ⬜ All unhandled 500 errors must return a generic `{"detail": "Internal server error"}` message
+- ⬜ Add centralised server-side error logging (written to log files or a logging service, never returned to client)
+- ⬜ Remove all `console.log()` statements from production frontend build (use build-time stripping or `eslint no-console`)
+- ⬜ Remove all `print()` debug statements from backend (replace with structured `logger.*` calls)
+
+### Performance & Reliability
+- ⬜ Load test: simulate 50 concurrent users uploading and chatting — check for race conditions, connection exhaustion, memory leaks
+- ⬜ Add database connection pooling on backend (Supabase client reuse, not a new client per request)
+- ⬜ Add retry logic with exponential backoff for all external API calls (OpenRouter, Supabase)
+- ⬜ Add timeout on all LLM calls (max 60 s) to prevent indefinitely hanging requests
+- ⬜ Verify ChromaDB connection is resilient to container restarts — reconnects automatically without backend restart
+
+### Dependency Security
+- ⬜ Run `pip-audit` on Python dependencies and resolve any packages with known CVEs
+- ⬜ Run `npm audit` on Node dependencies and resolve any high/critical severity issues
+- ⬜ Pin all dependency versions in `requirements.txt` and commit `package-lock.json`
+- ⬜ Remove unused dependencies from both `requirements.txt` and `package.json`
+
+### Logging & Monitoring
+- ⬜ Add structured logging (JSON format) on backend with consistent log levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`)
+- ⬜ Log all authentication events: login, logout, failed logins, token validation failures
+- ⬜ Log all destructive actions: paper deletion, project deletion, conversation deletion
+- ⬜ Never log sensitive data: passwords, API keys, JWT tokens, PII (email only in `DEBUG` level at most)
+- ⬜ Add request IDs (UUID per request, injected as middleware) for tracing issues across log lines
+
+### Session & Token Management
+- ⬜ Verify Supabase sessions have reasonable expiry (not 100+ days)
+- ⬜ Verify logout clears all session data, cookies, and `sessionStorage` (including BYOK key)
+- ⬜ Test token refresh flow: let a session expire, verify the app re-authenticates transparently
+- ⬜ Test that a JWT from User A cannot be used to authenticate as User B (no session fixation)
+
+### Frontend Security
+- ⬜ Verify no sensitive data (API keys, service role keys, internal URLs) appears in the compiled JS bundle
+- ⬜ Inspect build output (`next build` → `.next/static/chunks/`) for accidentally exposed strings
+- ⬜ Verify all API calls include the `Authorization: Bearer <token>` header
+- ⬜ Add CSP meta tag (or header) to prevent inline scripts and loading resources from untrusted origins
+
+### Testing
+- ⬜ Write integration tests for critical paths: signup → upload → chat → source citation
+- ⬜ Manual penetration testing: attempt SQL injection, XSS, CSRF, IDOR on every API endpoint
+- ⬜ Test with invalid/malformed JWTs, expired tokens, tokens signed with a different secret
+- ⬜ Test file upload edge cases: files > 50 MB, non-PDF files renamed to `.pdf`, PDFs with embedded JS, zero-byte files
+
+### Final Pre-Deployment
+- ⬜ Remove or convert all `TODO` / `FIXME` comments — create GitHub issues for anything deferred
+- ⬜ Remove all test/demo/debug-only endpoints from the production build
+- ⬜ Set `DEBUG=False` (or equivalent) in all production environment configs
+- ⬜ Switch Supabase project to production keys (not dev/staging project)
+- ⬜ Set up error tracking (Sentry free tier — captures backend exceptions + frontend JS errors)
+- ⬜ Set up uptime monitoring (UptimeRobot free tier — ping `/health` every 5 minutes)
