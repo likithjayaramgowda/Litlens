@@ -295,7 +295,7 @@ function EmptyPapers() {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function UploadZone() {
+export default function UploadZone({ projectId }: { projectId?: string }) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploads, setUploads] = useState<UploadEntry[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -313,21 +313,21 @@ export default function UploadZone() {
     });
   }, []);
 
-  // ── Fetch existing papers on mount ──────────────────────────────────────────
+  // ── Fetch existing papers (re-runs when projectId changes) ─────────────────
   useEffect(() => {
     if (!token) return;
-    fetch(`${API_URL}/api/v1/papers/`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    setLoadingPapers(true);
+    const url = projectId
+      ? `${API_URL}/api/v1/papers/?project_id=${projectId}`
+      : `${API_URL}/api/v1/papers/`;
+    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((data: Paper[]) => setPapers(data))
       .catch(() => {/* backend may not be running yet */})
       .finally(() => setLoadingPapers(false));
-  }, [token]);
+  }, [token, projectId]);
 
   // ── Poll while any paper is processing ─────────────────────────────────────
-  // Fires every 3 s as long as at least one paper has status 'uploaded' or
-  // 'processing'. Stops automatically once all reach 'ready' or 'error'.
   useEffect(() => {
     if (!token) return;
     const needsPoll = papers.some(
@@ -335,22 +335,19 @@ export default function UploadZone() {
     );
     if (!needsPoll) return;
 
+    const url = projectId
+      ? `${API_URL}/api/v1/papers/?project_id=${projectId}`
+      : `${API_URL}/api/v1/papers/`;
+
     const id = setInterval(async () => {
       try {
-        const r = await fetch(`${API_URL}/api/v1/papers/`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (r.ok) {
-          const fresh: Paper[] = await r.json();
-          setPapers(fresh);
-        }
-      } catch {
-        // silently ignore transient network errors
-      }
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (r.ok) setPapers(await r.json());
+      } catch { /* silently ignore */ }
     }, POLL_INTERVAL_MS);
 
     return () => clearInterval(id);
-  }, [token, papers]);
+  }, [token, papers, projectId]);
 
   // ── Upload helpers ──────────────────────────────────────────────────────────
 
@@ -371,6 +368,7 @@ export default function UploadZone() {
     return new Promise((resolve, reject) => {
       const body = new FormData();
       body.append("files", file);
+      if (projectId) body.append("project_id", projectId);
 
       const xhr = new XMLHttpRequest();
 

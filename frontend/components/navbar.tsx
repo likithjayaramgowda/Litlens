@@ -31,6 +31,12 @@ export default async function Navbar() {
               >
                 Dashboard
               </Link>
+              <Link
+                href="/chat"
+                className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Chat
+              </Link>
 
               {/* Avatar */}
               {avatarUrl ? (

@@ -27,7 +27,7 @@ import json
 import logging
 from typing import Annotated, AsyncIterator
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -36,11 +36,13 @@ from app.services.quota_service import is_demo_user, check_quota, increment_usag
 from app.services.retrieval_service import retrieve_chunks, build_system_prompt
 from app.services.chat_service import (
     create_conversation,
+    delete_conversation,
     get_conversations,
     get_messages,
     save_message,
     update_conversation_timestamp,
 )
+from app.services.project_service import get_project_paper_ids
 from app.services.llm_router import stream_free_tier, stream_byok, TIERS
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -53,6 +55,7 @@ class ChatRequest(BaseModel):
     message: str
     tier: str = "quick"
     conversation_id: str | None = None
+    project_id: str | None = None
 
 
 class ConversationItem(BaseModel):
@@ -60,6 +63,7 @@ class ConversationItem(BaseModel):
     title: str
     created_at: str
     updated_at: str
+    project_id: str | None = None
 
 
 # ── SSE helpers ───────────────────────────────────────────────────────────────
@@ -107,7 +111,13 @@ async def chat_stream(
             )
 
     # ── Retrieval (done before streaming so sources arrive in first SSE event) ──
-    chunks = retrieve_chunks(user_id, body.message, n_results=15)
+    paper_ids: list[str] | None = None
+    if body.project_id:
+        paper_ids = get_project_paper_ids(body.project_id, user_id)
+        if not paper_ids:
+            # Project exists but has no papers — skip retrieval entirely
+            paper_ids = []
+    chunks = retrieve_chunks(user_id, body.message, n_results=15, paper_ids=paper_ids if paper_ids else None)
     system_prompt, sources = build_system_prompt(chunks)
 
     # ── Build message list with conversation history ───────────────────────────
@@ -139,7 +149,9 @@ async def chat_stream(
         try:
             if not conversation_id:
                 title = body.message[:80].strip()
-                conversation_id = create_conversation(user_id, title)
+                conversation_id = create_conversation(
+                    user_id, title, project_id=body.project_id
+                )
             save_message(user_id, conversation_id, "user", body.message)
         except Exception as exc:
             logger.warning("Could not persist user message: %s", exc)
@@ -211,8 +223,25 @@ async def chat_stream(
 )
 async def list_conversations(
     user: Annotated[dict, Depends(get_current_user)],
+    project_id: str | None = Query(None, description="Filter by project"),
 ) -> list[dict]:
-    return get_conversations(user["sub"])
+    return get_conversations(user["sub"], project_id=project_id)
+
+
+@router.delete(
+    "/conversations/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a conversation and all its messages",
+)
+async def delete_conversation_endpoint(
+    conversation_id: str,
+    user: Annotated[dict, Depends(get_current_user)],
+) -> Response:
+    success = delete_conversation(conversation_id, user["sub"])
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

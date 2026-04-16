@@ -78,6 +78,7 @@ def embed_paper(
     user_id: str,
     paper_title: str,
     pages: list[PageText],
+    project_id: str | None = None,
 ) -> int:
     """
     Chunk, embed, and upsert all pages of a paper into ChromaDB.
@@ -107,13 +108,16 @@ def embed_paper(
                 continue
             ids.append(f"{paper_id}_p{page.page}_c{chunk_index}")
             texts.append(chunk_text)
-            metadatas.append({
+            meta: dict = {
                 "paper_id": paper_id,
                 "user_id": user_id,
                 "paper_title": paper_title,
                 "page_number": page.page,
                 "chunk_index": chunk_index,
-            })
+            }
+            if project_id:
+                meta["project_id"] = project_id
+            metadatas.append(meta)
             chunk_index += 1
 
     if not ids:

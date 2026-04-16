@@ -34,18 +34,24 @@ def _service_client() -> Client:
 
 # ── Conversations ─────────────────────────────────────────────────────────────
 
-def create_conversation(user_id: str, title: str) -> str:
+def create_conversation(
+    user_id: str,
+    title: str,
+    project_id: str | None = None,
+) -> str:
     """
     Insert a new conversation row and return its UUID.
 
     The title is auto-generated from the first user message (first 120 chars).
     """
     sb = _service_client()
-    result = (
-        sb.table("conversations")
-        .insert({"user_id": user_id, "title": title[:120].strip() or "New Chat"})
-        .execute()
-    )
+    payload: dict = {
+        "user_id": user_id,
+        "title": title[:120].strip() or "New Chat",
+    }
+    if project_id:
+        payload["project_id"] = project_id
+    result = sb.table("conversations").insert(payload).execute()
     return result.data[0]["id"]
 
 
@@ -58,26 +64,59 @@ def update_conversation_timestamp(conversation_id: str) -> None:
         logger.debug("Could not touch conversation %s: %s", conversation_id, exc)
 
 
-def get_conversations(user_id: str, limit: int = 50) -> list[dict]:
+def get_conversations(
+    user_id: str,
+    limit: int = 50,
+    project_id: str | None = None,
+) -> list[dict]:
     """
     Return the user's conversations ordered by most-recently-updated.
 
+    Pass project_id to filter to a single project workspace.
     Returns an empty list on any error (e.g. migration not yet run).
     """
     try:
         sb = _service_client()
-        result = (
+        query = (
             sb.table("conversations")
-            .select("id, title, created_at, updated_at")
+            .select("id, title, created_at, updated_at, project_id")
             .eq("user_id", user_id)
             .order("updated_at", desc=True)
             .limit(limit)
-            .execute()
         )
+        if project_id:
+            query = query.eq("project_id", project_id)
+        result = query.execute()
         return result.data or []
     except Exception as exc:
         logger.warning("Could not load conversations for user %s: %s", user_id, exc)
         return []
+
+
+def delete_conversation(conversation_id: str, user_id: str) -> bool:
+    """
+    Delete a conversation and all its messages (cascaded by FK).
+
+    Returns True on success, False if the conversation does not exist or
+    belongs to a different user.  Never raises.
+    """
+    try:
+        sb = _service_client()
+        check = (
+            sb.table("conversations")
+            .select("id")
+            .eq("id", conversation_id)
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        if not check.data:
+            return False
+        sb.table("conversations").delete().eq("id", conversation_id).execute()
+        return True
+    except Exception as exc:
+        logger.warning("Could not delete conversation %s: %s", conversation_id, exc)
+        return False
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────

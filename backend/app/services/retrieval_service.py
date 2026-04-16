@@ -26,9 +26,16 @@ def retrieve_chunks(
     user_id: str,
     query: str,
     n_results: int = 15,
+    paper_ids: list[str] | None = None,
 ) -> list[dict]:
     """
     Search the user's ChromaDB collection for the top-N most relevant chunks.
+
+    Parameters
+    ----------
+    paper_ids : optional list of paper IDs to restrict the search to.
+                When provided (project-scoped queries), only chunks whose
+                paper_id appears in this list are returned.
 
     Returns a list of dicts with keys:
         text, paper_id, paper_title, page_number, relevance_score (0–1)
@@ -55,11 +62,24 @@ def retrieve_chunks(
             return []
 
         actual_n = min(n_results, count)
-        results = collection.query(
-            query_embeddings=[embedding],
-            n_results=actual_n,
-            include=["documents", "metadatas", "distances"],
-        )
+
+        # Build optional where-filter for project scoping
+        where: dict | None = None
+        if paper_ids:
+            if len(paper_ids) == 1:
+                where = {"paper_id": paper_ids[0]}
+            else:
+                where = {"paper_id": {"$in": paper_ids}}
+
+        query_kwargs: dict = {
+            "query_embeddings": [embedding],
+            "n_results": actual_n,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            query_kwargs["where"] = where
+
+        results = collection.query(**query_kwargs)
 
         chunks: list[dict] = []
         for doc, meta, dist in zip(

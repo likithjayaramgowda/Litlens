@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 import fitz  # PyMuPDF
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel
 from supabase import create_client, Client
 
@@ -56,6 +56,7 @@ class PaperOut(BaseModel):
     page_count: int
     status: str
     created_at: str
+    project_id: str | None = None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ async def upload_papers(
     background_tasks: BackgroundTasks,
     user: Annotated[dict, Depends(get_current_user)],
     files: list[UploadFile] = File(..., description="PDF files to upload"),
+    project_id: str | None = Form(None, description="Project to assign these papers to"),
 ) -> list[PaperOut]:
     """
     Accept **one or more** PDF files via multipart/form-data.
@@ -155,6 +157,8 @@ async def upload_papers(
             "page_count": meta.page_count,
             "status": "uploaded",
         }
+        if project_id:
+            row["project_id"] = project_id
 
         try:
             db_result = sb.table("papers").insert(row).execute()
@@ -177,6 +181,7 @@ async def upload_papers(
             user_id=user_id,
             paper_title=paper.title,
             file_bytes=raw,
+            project_id=project_id or None,
         )
 
     return results
@@ -190,9 +195,12 @@ async def upload_papers(
 async def list_papers(
     background_tasks: BackgroundTasks,
     user: Annotated[dict, Depends(get_current_user)],
+    project_id: str | None = Query(None, description="Filter papers by project"),
 ) -> list[PaperOut]:
     """
-    Return all papers owned by the authenticated user, newest first.
+    Return papers owned by the authenticated user, newest first.
+
+    Pass ?project_id=<uuid> to filter by project.
 
     Any papers still in status='uploaded' (i.e. uploaded before the embedding
     pipeline existed, or whose background task never ran) are automatically
@@ -203,13 +211,15 @@ async def list_papers(
     sb = _supabase()
 
     try:
-        db_result = (
+        query = (
             sb.table("papers")
             .select("*")
             .eq("user_id", user_id)
             .order("created_at", desc=True)
-            .execute()
         )
+        if project_id:
+            query = query.eq("project_id", project_id)
+        db_result = query.execute()
     except HTTPException:
         raise
     except Exception as exc:

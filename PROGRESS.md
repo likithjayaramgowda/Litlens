@@ -10,7 +10,7 @@
 | Field | Value |
 |---|---|
 | **Project** | LitLens — AI-powered document search & analysis |
-| **Current Phase** | Phase 3.5: OpenRouter free-tier + quota system (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅) |
+| **Current Phase** | Phase 4 complete + Phase 2.3 complete (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅, Phase 3.5 ✅, Phase 4 ✅, Phase 2.3 ✅) |
 | **Frontend** | Next.js 14, App Router, TypeScript, Tailwind CSS, shadcn/ui |
 | **Backend** | FastAPI (Python 3.11), pydantic-settings |
 | **Vector DB** | ChromaDB |
@@ -39,8 +39,8 @@
 - ✅ Supabase Postgres papers table (migration SQL provided)
 - ✅ PDF chunking (RecursiveCharacterTextSplitter, 512-token chunks, 50-token overlap)
 - ✅ Embedding generation (all-MiniLM-L6-v2 via sentence-transformers, stored in ChromaDB)
-- ⬜ Dashboard layout (sidebar nav, workspace list)
-- ⬜ Workspaces (create / rename / delete, per-user isolation)
+- ✅ Dashboard layout (project card grid, create/delete projects, active workspace)
+- ✅ Workspaces / Project Spaces (create / delete, per-project paper scoping, ChromaDB filter)
 
 ### Phase 3: BYOK LLM Router
 - ✅ Provider abstraction layer (OpenAI / Anthropic / Gemini / Groq / Ollama)
@@ -56,11 +56,20 @@
 - ⬜ API key storage (encrypted, per-user in Supabase) — deferred; sessionStorage used instead
 
 ### Phase 4: Cross-Paper RAG Chat
-- ⬜ Retrieval engine (multi-doc semantic search over ChromaDB)
-- ⬜ Chat API endpoint with streaming (SSE / WebSocket)
-- ⬜ Chat frontend (message list, streaming token display)
-- ⬜ Source citations inline with each response
-- ⬜ Specialized system prompts (summarize, compare, explain)
+- ✅ Retrieval engine (multi-doc semantic search over ChromaDB)
+- ✅ Chat API endpoint with streaming (SSE)
+- ✅ Chat frontend (message list, streaming token display, conversation sidebar)
+- ✅ Source citations inline with each response (expandable source cards)
+- ✅ Specialized system prompt (synthesize, cite, highlight contradictions)
+- ✅ 3-way model tier toggle (Quick / Deep Thinking / Long Context)
+- ✅ Supabase conversations + messages tables (migration 004)
+- ✅ Conversation history (persistent, paginated sidebar)
+- ✅ Example questions on empty state
+- ✅ BYOK override (DeepSeek key from Advanced Settings bypasses free tier)
+- ✅ Conversational memory (last 10 turns sent to LLM; requires migration 004 to be run)
+- ✅ Delete conversations (trash icon on hover → confirmation modal → DELETE endpoint)
+- ✅ Project-scoped chat (conversation linked to project_id; retrieval filtered to project papers)
+- ✅ UI redesign: gradient backgrounds, fade-slide-in message animations, typing indicator, purple gradient user bubbles, coloured source card borders, premium empty state
 
 ### Phase 5: Citation Assistant
 - ⬜ Tiptap rich-text editor integration
@@ -80,6 +89,12 @@
 - ⬜ Loading states & skeletons across all async UI
 - ⬜ Dark mode (Tailwind `dark:` classes + theme toggle)
 - ⬜ Error handling (toast notifications, API error boundaries)
+- ⬜ Collapsible left sidebar (Claude.ai style) — New Chat, Search, Chats, Projects, Settings, Recents sections; user menu pinned at bottom; collapses to icon rail
+- ⬜ Remove top navbar; move all navigation into the sidebar (sidebar replaces navbar globally)
+- ⬜ Move model tier toggle to near the prompt input (not top-right); style as pill/dropdown like Claude's model picker
+- ⬜ Replace bouncing-dots loading indicator with "LitLens is thinking…" animated text; contextual per tier: "Analyzing across papers…" (Deep Thinking), "Processing long context…" (Long Context), "Thinking…" (Quick)
+- ⬜ Projects page redesign: grid of cards, each card opens a tabbed view with Papers tab + Chats tab
+- ⬜ Smooth message entrance animations; subtle gradient panel backgrounds; premium overall polish pass
 
 ### Phase 8: Deployment
 - ⬜ Dockerize backend for Render (production Dockerfile, env config)
@@ -90,6 +105,212 @@
 ---
 
 ## Completed Task Log
+
+### [Phase 4 — hotfix] OpenRouter fallback + quota table fixes
+**Date**: 2026-04-15
+**What was done**:
+
+Three targeted fixes to stabilise the chat endpoint after Phase 4 launch:
+
+1. **Fallback model corrected** (`llm_router.py`):
+   - `_OR_FALLBACK_MODEL` changed from `"openrouter/auto:free"` → `"openrouter/free"`.
+   - `openrouter/auto:free` is not a valid OpenRouter model ID; `openrouter/free` is the correct identifier for OpenRouter's free-model router.
+
+2. **`user_query_usage` missing table** — no code change needed:
+   - `quota_service.py` already degrades gracefully: `get_quota_info` catches any DB exception and returns `used=0`; `increment_usage` catches and logs, returning `0`. App works end-to-end even before the migration is run.
+   - Migration file `backend/supabase/migrations/003_query_usage.sql` already exists.
+
+3. **Pending migrations reminder** (must be run in Supabase SQL Editor):
+   - `003_query_usage.sql` — creates `user_query_usage` table + `increment_query_usage` SECURITY DEFINER function. Enables quota tracking.
+   - `004_chat_tables.sql` — creates `conversations` + `messages` tables + `touch_conversation` helper. Required for conversation/message persistence.
+
+**Files modified**: `backend/app/services/llm_router.py`
+**Blockers**: None (quota/chat work without migrations via graceful degradation; run migrations to enable full persistence + quota enforcement).
+
+---
+
+### [Phase 2.3 + Phase 4 Polish] Project Spaces, UI Redesign, Delete Chats
+**Date**: 2026-04-16
+**What was done**:
+
+#### 1. Conversational Memory
+Already correctly implemented in `chat.py` (`get_messages` → last 20 messages passed to LLM). Works once migration 004 is run. No code change needed.
+
+#### 2. Project Spaces (Phase 2.3)
+
+**SQL migration** (`backend/supabase/migrations/005_projects.sql`):
+- New `projects` table: `(id, user_id, name, description, created_at, updated_at)` with RLS and `touch_project()` SECURITY DEFINER helper.
+- `ALTER TABLE papers ADD COLUMN project_id UUID REFERENCES projects(id) ON DELETE SET NULL` — nullable for backward compat.
+- `ALTER TABLE conversations ADD COLUMN project_id UUID REFERENCES projects(id) ON DELETE SET NULL`.
+- Indexes on both FK columns.
+
+**Backend — new files:**
+- `backend/app/services/project_service.py`: `get_projects`, `get_project`, `get_project_paper_ids`, `get_project_paper_count`, `create_project`, `update_project`, `delete_project`.
+- `backend/app/api/projects.py`: `GET /api/v1/projects/`, `POST /api/v1/projects/`, `PUT /api/v1/projects/{id}`, `DELETE /api/v1/projects/{id}`.
+
+**Backend — modified files:**
+- `embedding_service.py`: `embed_paper` accepts optional `project_id`; stored in ChromaDB chunk metadata.
+- `processing_service.py`: `process_paper` and `reprocess_paper` accept `project_id`, thread it to `embed_paper`.
+- `papers.py`: `project_id: str | None = Form(None)` on upload; stored in DB row; `list_papers` accepts `?project_id=` query param.
+- `retrieval_service.py`: `retrieve_chunks` accepts `paper_ids: list[str] | None`; if provided, adds `where={"paper_id": {"$in": paper_ids}}` to ChromaDB query (works with existing papers via post-filter).
+- `chat_service.py`: `create_conversation` accepts `project_id`; `get_conversations` accepts `project_id` filter; new `delete_conversation(conversation_id, user_id) → bool`.
+- `chat.py`: `ChatRequest` adds `project_id`; chat stream fetches `paper_ids` from `project_service` and passes to retrieval; `get_conversations` endpoint accepts `?project_id=`; new `DELETE /api/v1/chat/conversations/{id}`; `ConversationItem` adds `project_id`.
+- `main.py`: registered `projects_router` at `/api/v1`.
+
+**Frontend — new files:**
+- `frontend/components/project-dashboard.tsx`: Client Component — project card grid, `CreateCard` (dashed border), `ProjectCard` (gradient header strip, paper count, relative timestamp, menu → delete), `CreateProjectModal`, `DeleteProjectModal`. Active project stored in `localStorage`. Passes `projectId` prop down to `UploadZone`.
+
+**Frontend — modified files:**
+- `frontend/components/upload-zone.tsx`: accepts `projectId?: string`; appends `project_id` to XHR FormData; filters `/api/v1/papers/?project_id=` on fetch and poll.
+- `frontend/app/dashboard/page.tsx`: renders `<ProjectDashboard />` client component below the page header.
+
+#### 3. Chat UI Redesign
+
+Full rewrite of `frontend/components/chat-interface.tsx`:
+- **Background**: dark purple → dark blue gradient (`#0a0a14 → #0d0a1a → #080810`).
+- **Message animations**: `@keyframes fadeSlideIn` — fade + slide up on each new message (injected via `<style dangerouslySetInnerHTML>`).
+- **Typing indicator**: three bouncing dots (CSS `dotBounce` keyframe) shown while `isPending=true` and `content=""`.
+- **User bubbles**: `bg-gradient-to-br from-violet-600 to-violet-700` with shadow.
+- **Assistant cards**: `bg-slate-900/80 border border-slate-800` — dark card style.
+- **Source cards**: `border-l-[3px]` coloured by paper hash (violet / blue / emerald / amber / rose / cyan); coloured dot + paper title; expandable with italic excerpt.
+- **Empty state**: large gradient icon, bold tagline, 4 example question cards with emoji icons, glow hover effect.
+- **Tier toggle**: gradient active state, rounded-xl.
+- **Project indicator**: badge in top bar when `projectId` is set.
+- **`ChatInterface` prop**: accepts optional `projectId` to scope conversations and retrieval.
+
+#### 4. Delete Conversations
+
+- Backend: `delete_conversation(id, user_id)` + `DELETE /api/v1/chat/conversations/{id}` (204).
+- Frontend: `ConvRow` component with trash icon visible on group hover → `DeleteModal` confirmation → `handleDeleteConversation` calls DELETE endpoint, removes from state, clears active if needed.
+
+**Required migration (run in Supabase SQL Editor):**
+- `backend/supabase/migrations/005_projects.sql`
+
+**Files created:** `005_projects.sql`, `project_service.py`, `projects.py`, `project-dashboard.tsx`
+**Files modified:** `embedding_service.py`, `processing_service.py`, `papers.py`, `retrieval_service.py`, `chat_service.py`, `chat.py`, `main.py`, `chat-interface.tsx`, `upload-zone.tsx`, `dashboard/page.tsx`
+**Blockers:** None. Migration 005 must be run to enable project creation; app works without it (projects API returns empty list, papers/chat work as before).
+
+---
+
+### [Phase 2.3 + Phase 4 Polish — Part 2] Project-scoped chats, paper linking fix, font improvements
+**Date**: 2026-04-16
+**What was done**:
+
+Four targeted fixes after the initial Phase 2.3 launch to address papers not linking to projects, missing chat scoping in the dashboard, and UI readability.
+
+#### 1. Papers Linking to Projects — Backfill Migration
+
+**`backend/supabase/migrations/006_backfill_unsorted.sql`** (new):
+- Idempotent DO block: iterates every `user_id` that has `project_id IS NULL` papers.
+- For each user, creates an "Unsorted" project (if one doesn't exist yet) and assigns all their unlinked papers to it.
+- Second loop handles users who have conversations but no papers, also assigning them to "Unsorted".
+- Exception handler catches `undefined_table` for users on older schemas where the `conversations` table doesn't exist yet.
+- Safe to re-run: checks for existing "Unsorted" project before inserting.
+
+**Upload path confirmed correct**: `papers.py` already passes `project_id` to the DB row and `chat-interface.tsx` sends `project_id` in the request body. No code fix needed — existing papers just needed the backfill.
+
+#### 2. Chats Scoped to Projects in Dashboard
+
+**`frontend/components/project-dashboard.tsx`** (rewritten):
+- **`ProjectView` component** (replaces old single-column layout):
+  - Header: back button ("← All Projects" text) + folder icon + project name + description.
+  - **Papers section**: horizontal divider + paper count heading + `<UploadZone projectId={project.id} />`.
+  - **Chats section**: horizontal divider + "New Chat" button (navigates to `/chat?projectId=xxx`) + conversation list.
+  - `ConversationCard`: shows first message content as preview + relative timestamp; links to `/chat?projectId=xxx&convId=yyy`; delete button (calls `DELETE /api/v1/chat/conversations/{id}`).
+  - Fetches conversations from `GET /api/v1/chat/conversations?project_id=xxx` on mount.
+  - Handles empty state ("No chats yet") with prompt to start a new chat.
+- **Project switcher strip**: when `activeProject` is set, shows horizontal tab strip across the top with all project names — click to switch projects without going back to the grid.
+- Deterministic accent colour per project (same hash approach as source cards) used in `ProjectCard` header strips.
+
+#### 3. Chat Page Deep-linking
+
+**`frontend/app/chat/page.tsx`** (modified):
+- Reads both `searchParams.projectId` and `searchParams.convId`.
+- Passes both to `<ChatInterface projectId={...} initialConvId={...} />`.
+
+**`frontend/components/chat-interface.tsx`** (modified):
+- Added `initialConvId?: string` prop; `activeConvId` state is initialized from it.
+- Fetches project name from `/api/v1/projects/` on mount when `projectId` is set.
+- Shows project name as a violet pill badge (Layers icon + name) in the top bar.
+- Sidebar header shows "← Dashboard" back button + project name when `projectId` is set.
+- Conversations fetched from `GET /api/v1/chat/conversations?project_id=xxx` when `projectId` is provided.
+- `sendMessage` includes `project_id: projectId ?? null` in the request body.
+
+#### 4. Font Size & Readability Improvements
+
+Full pass through `chat-interface.tsx` increasing all text sizes:
+- Message text: `text-[15px]` (was `text-sm` / `text-xs`)
+- Conversation titles in sidebar: `text-sm font-semibold` (was `text-xs font-medium`)
+- Sidebar timestamps: `text-xs` (was `text-[10px]`)
+- Source card titles and text: `text-sm` throughout (was `text-xs`)
+- Input textarea: `text-base` (was `text-sm`)
+- Example question cards: `text-sm font-semibold` (was `text-xs font-medium`)
+- Tier toggle labels: `text-sm` (was `text-xs`)
+- Quota display: `text-sm` (was `text-xs`)
+- Empty state description: `text-base` (was `text-sm`)
+- Sidebar width: `w-72` (was `w-64`)
+
+**Required migration (run in Supabase SQL Editor):**
+- `backend/supabase/migrations/006_backfill_unsorted.sql` — assigns all NULL-project papers/conversations to a per-user "Unsorted" project.
+
+**Files created:** `006_backfill_unsorted.sql`
+**Files modified:** `project-dashboard.tsx`, `chat/page.tsx`, `chat-interface.tsx`
+**Blockers:** None. Run migration 006 to fix existing papers with NULL project_id.
+
+---
+
+### [Phase 4] Cross-Paper RAG Chat
+**Date**: 2026-04-15
+**What was done**:
+
+Full retrieval-augmented generation pipeline from ChromaDB retrieval to streaming SSE chat.
+
+**Backend — new files:**
+- `backend/app/services/retrieval_service.py`:
+  - `retrieve_chunks(user_id, query, n_results=15)` — embeds the query with all-MiniLM-L6-v2, searches user's ChromaDB collection, returns top-N chunks with relevance scores.
+  - `build_system_prompt(chunks)` — groups chunks by paper, formats context block with page-level citations, returns `(system_prompt, sources)`. Sources list is deduplicated by (paper_id, page_number).
+  - Graceful degradation: returns empty prompt directing user to upload papers if no collection found.
+- `backend/app/services/chat_service.py`:
+  - `create_conversation`, `get_conversations`, `save_message`, `get_messages`, `update_conversation_timestamp`.
+  - All writes use service-role client (bypasses RLS). Reads filter by user_id for ownership enforcement.
+  - `sources_json` stored as JSONB; parsed back into list on read.
+- `backend/app/api/chat.py`:
+  - `POST /api/v1/chat/stream` — full RAG pipeline with SSE streaming. Quota check → retrieval → history load → LLM stream → persist → increment quota. BYOK bypass if `X-LLM-API-Key` header present. SSE events: `sources`, `token`, `done`, `error`.
+  - `GET /api/v1/chat/conversations` — list user conversations (newest first).
+  - `GET /api/v1/chat/conversations/{id}/messages` — load conversation messages.
+- `backend/supabase/migrations/004_chat_tables.sql` — `conversations` + `messages` tables with RLS, indexes, `touch_conversation` SECURITY DEFINER helper.
+
+**Backend — modified files:**
+- `backend/app/main.py`: Added `chat_router` import and `app.include_router(chat_router, ...)`.
+
+**Frontend — new files:**
+- `frontend/app/chat/page.tsx` — server component; redirects unauthenticated users to `/login`, renders `<ChatInterface />`.
+- `frontend/components/chat-interface.tsx` — full client-side chat UI:
+  - Left sidebar: conversation history list, new-chat button, quota progress bar.
+  - Top bar: sidebar toggle, active conversation title, tier toggle (Quick / Deep Thinking / Long Context).
+  - Message area: streaming bubbles with cursor animation, empty state with 4 example questions.
+  - Source cards: expandable per-message source citations (paper title, page number, relevance %, excerpt).
+  - Input bar: auto-resizing textarea, Enter to send, Shift+Enter for newline.
+  - BYOK integration: reads `loadLLMSettings()` from settings-modal; if key present, sends BYOK headers and shows "DeepSeek BYOK" in tier toggle area.
+
+**Frontend — modified files:**
+- `frontend/components/navbar.tsx`: Added "Chat" link next to "Dashboard".
+
+**Key design decisions:**
+- Sources sent as first SSE event before tokens so the UI can render them immediately alongside the streaming text.
+- Conversation history: last 20 messages (10 turns) included in context to stay within token limits.
+- Quota incremented only after the first token streams successfully — no charge for failed requests.
+- Tier toggle disabled when BYOK key is active (user is on their own key, not the free pool).
+- `SECURITY DEFINER` on `touch_conversation` so service-role RPC can update updated_at without RLS issues.
+
+**Pending (run in Supabase SQL Editor):**
+- `backend/supabase/migrations/004_chat_tables.sql` — must be run to enable conversation/message persistence.
+
+**Files created:** `retrieval_service.py`, `chat_service.py`, `chat.py` (API), `004_chat_tables.sql`, `frontend/app/chat/page.tsx`, `frontend/components/chat-interface.tsx`
+**Files modified:** `main.py`, `navbar.tsx`
+**Blockers:** None.
+
+---
 
 ### [Phase 3.5b] OpenRouter simplification
 **Date**: 2026-04-15

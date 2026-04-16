@@ -25,6 +25,7 @@ def process_paper(
     user_id: str,
     paper_title: str,
     file_bytes: bytes,
+    project_id: str | None = None,
 ) -> None:
     """
     Full pipeline for a single paper.  Must not raise — all exceptions are
@@ -60,6 +61,7 @@ def process_paper(
             user_id=user_id,
             paper_title=paper_title,
             pages=pages,
+            project_id=project_id,
         )
         print(f"[PIPELINE] embed_paper done — {chunk_count} chunks stored.", flush=True)
 
@@ -80,6 +82,7 @@ def reprocess_paper(
     user_id: str,
     paper_title: str,
     storage_path: str,
+    project_id: str | None = None,
 ) -> None:
     """
     Like process_paper but fetches the PDF bytes from Supabase Storage first.
@@ -107,6 +110,7 @@ def reprocess_paper(
         user_id=user_id,
         paper_title=paper_title,
         file_bytes=file_bytes,
+        project_id=project_id,
     )
 
 

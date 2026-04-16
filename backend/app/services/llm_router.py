@@ -37,7 +37,7 @@ _OR_HEADERS = {
     "HTTP-Referer": "https://litlens.app",
     "X-Title": "LitLens",
 }
-_OR_FALLBACK_MODEL = "openrouter/auto"
+_OR_FALLBACK_MODEL = "openrouter/free"
 
 # ── Model tier catalogue ──────────────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ TIERS: list[dict] = [
     {
         "id": "quick",
         "label": "Quick",
-        "model": "zhipu/glm-4.5-air:free",
+        "model": "meta-llama/llama-3.3-70b-instruct:free",
         "description": "Fast responses for simple questions and quick lookups.",
         "icon": "⚡",
     },
@@ -84,9 +84,14 @@ BYOK_PROVIDERS: dict[str, dict] = {
 
 # ── Rate-limit detection ──────────────────────────────────────────────────────
 
-def _is_rate_limit(exc: Exception) -> bool:
+def _is_retriable(exc: Exception) -> bool:
+    """Return True for errors that should trigger the free-tier fallback."""
     msg = str(exc).lower()
-    return any(s in msg for s in ("429", "rate limit", "resource exhausted", "quota", "too many"))
+    return any(s in msg for s in (
+        "429", "402",
+        "rate limit", "resource exhausted", "quota", "too many",
+        "insufficient credits", "payment required",
+    ))
 
 
 # ── Core streaming via OpenAI SDK ─────────────────────────────────────────────
@@ -162,9 +167,8 @@ async def stream_free_tier(
         return
     except Exception as exc:
         await gen.aclose()
-        print(f"[LLM] {model} failed ({exc!r}), falling back to openrouter/auto", flush=True)
-        if _is_rate_limit(exc) or True:   # any error → try auto fallback
-            # Fallback: openrouter/auto picks an available free model
+        print(f"[LLM] {model} failed ({exc!r}), falling back to {_OR_FALLBACK_MODEL}", flush=True)
+        if True:   # any error → try free fallback
             fallback = _stream_openai_compat(
                 base_url=_OR_BASE_URL,
                 api_key=settings.OPENROUTER_API_KEY,
