@@ -1,19 +1,18 @@
 """
-Chunking, embedding, and ChromaDB storage for paper text.
+Chunking, embedding, and pgvector storage for paper text.
 
 Chunk size: 512 tokens ≈ 2 048 characters (4 chars/token approximation).
 Overlap:     50 tokens ≈   200 characters.
 Model:       all-MiniLM-L6-v2 (384-dim, cosine similarity, ~80 MB on first load).
-Collection:  one per user — ``user_{user_id}`` — with cosine distance space.
+Storage:     Supabase paper_chunks table via upsert (chunk_id is the conflict key).
 """
 from __future__ import annotations
 
 import logging
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
+from supabase import Client
 
-from app.core.chroma import get_chroma as _get_chroma
 from app.services.pdf_service import PageText
 
 logger = logging.getLogger(__name__)
@@ -21,19 +20,20 @@ logger = logging.getLogger(__name__)
 _CHUNK_CHARS = 2_048   # ≈ 512 tokens
 _OVERLAP_CHARS = 200   # ≈  50 tokens
 _MODEL_NAME = "all-MiniLM-L6-v2"
-_UPSERT_BATCH = 100    # rows per ChromaDB upsert call
+_UPSERT_BATCH = 50     # rows per Supabase upsert call
 
 _splitter = RecursiveCharacterTextSplitter(
     chunk_size=_CHUNK_CHARS,
     chunk_overlap=_OVERLAP_CHARS,
 )
 
-_model: SentenceTransformer | None = None
+_model = None
 
 
-def _get_model() -> SentenceTransformer:
+def _get_model():
     global _model
     if _model is None:
+        from sentence_transformers import SentenceTransformer  # lazy — keeps startup fast
         logger.info("Loading embedding model '%s'…", _MODEL_NAME)
         _model = SentenceTransformer(_MODEL_NAME)
         logger.info("Embedding model ready.")
@@ -41,6 +41,7 @@ def _get_model() -> SentenceTransformer:
 
 
 def embed_paper(
+    sb: Client,
     paper_id: str,
     user_id: str,
     paper_title: str,
@@ -48,21 +49,19 @@ def embed_paper(
     project_id: str | None = None,
 ) -> int:
     """
-    Chunk, embed, and upsert all pages of a paper into ChromaDB.
-
-    Each chunk gets metadata:
-      paper_id, user_id, paper_title, page_number, chunk_index
+    Chunk, embed, and upsert all pages of a paper into the paper_chunks table.
 
     Chunk IDs are deterministic: ``{paper_id}_p{page}_c{chunk_index}``
-    so re-processing a paper is safe (upsert is idempotent).
+    so re-processing a paper is safe (upsert on chunk_id is idempotent).
 
     Returns the total number of chunks stored.
     """
-    # ── Chunking ──────────────────────────────────────────────────────────────
     print(f"[EMBED] Chunking {len(pages)} pages for paper {paper_id}…", flush=True)
-    ids: list[str] = []
+
+    chunk_ids: list[str] = []
     texts: list[str] = []
-    metadatas: list[dict] = []
+    page_numbers: list[int] = []
+    chunk_indexes: list[int] = []
     chunk_index = 0
 
     for page in pages:
@@ -73,69 +72,62 @@ def embed_paper(
             chunk_text = chunk_text.strip()
             if not chunk_text:
                 continue
-            ids.append(f"{paper_id}_p{page.page}_c{chunk_index}")
+            chunk_ids.append(f"{paper_id}_p{page.page}_c{chunk_index}")
             texts.append(chunk_text)
-            meta: dict = {
-                "paper_id": paper_id,
-                "user_id": user_id,
-                "paper_title": paper_title,
-                "page_number": page.page,
-                "chunk_index": chunk_index,
-            }
-            if project_id:
-                meta["project_id"] = project_id
-            metadatas.append(meta)
+            page_numbers.append(page.page)
+            chunk_indexes.append(chunk_index)
             chunk_index += 1
 
-    if not ids:
+    if not chunk_ids:
         print(f"[EMBED] WARNING: paper {paper_id} produced 0 chunks — nothing to embed.", flush=True)
         logger.warning("Paper %s produced no chunks — nothing to embed.", paper_id)
         return 0
 
-    print(f"[EMBED] {len(ids)} chunks ready. Loading embedding model…", flush=True)
+    print(f"[EMBED] {len(chunk_ids)} chunks ready. Encoding with {_MODEL_NAME}…", flush=True)
 
-    # ── Embedding ─────────────────────────────────────────────────────────────
     model = _get_model()
-    print(f"[EMBED] Encoding {len(texts)} chunks…", flush=True)
     embeddings: list[list[float]] = model.encode(
         texts, show_progress_bar=False, convert_to_numpy=True
     ).tolist()
-    print(f"[EMBED] Encoding done. Connecting to ChromaDB…", flush=True)
 
-    # ── ChromaDB upsert ───────────────────────────────────────────────────────
-    chroma = _get_chroma()
-    collection_name = f"user_{user_id}"
-    print(f"[EMBED] Getting/creating collection '{collection_name}'…", flush=True)
-    collection = chroma.get_or_create_collection(
-        name=collection_name,
-        metadata={"hnsw:space": "cosine"},
-    )
+    print(f"[EMBED] Encoding done. Upserting to Supabase pgvector…", flush=True)
 
-    print(f"[EMBED] Upserting {len(ids)} chunks in batches of {_UPSERT_BATCH}…", flush=True)
-    for i in range(0, len(ids), _UPSERT_BATCH):
-        s = slice(i, i + _UPSERT_BATCH)
-        collection.upsert(
-            ids=ids[s],
-            documents=texts[s],
-            embeddings=embeddings[s],
-            metadatas=metadatas[s],
+    rows = [
+        {
+            "chunk_id":    chunk_ids[i],
+            "paper_id":    paper_id,
+            "user_id":     user_id,
+            "project_id":  project_id,
+            "paper_title": paper_title,
+            "page_number": page_numbers[i],
+            "chunk_index": chunk_indexes[i],
+            "content":     texts[i],
+            "embedding":   embeddings[i],
+        }
+        for i in range(len(chunk_ids))
+    ]
+
+    for start in range(0, len(rows), _UPSERT_BATCH):
+        batch = rows[start : start + _UPSERT_BATCH]
+        sb.table("paper_chunks").upsert(batch, on_conflict="chunk_id").execute()
+        print(
+            f"[EMBED]   upserted batch {start // _UPSERT_BATCH + 1} "
+            f"({min(start + _UPSERT_BATCH, len(rows))}/{len(rows)})",
+            flush=True,
         )
-        print(f"[EMBED]   upserted batch {i // _UPSERT_BATCH + 1} ({min(i + _UPSERT_BATCH, len(ids))}/{len(ids)})", flush=True)
 
     print(f"[EMBED] Done — {chunk_index} chunks stored for paper {paper_id}.", flush=True)
-    logger.info("Paper %s: %d chunks stored in ChromaDB.", paper_id, chunk_index)
+    logger.info("Paper %s: %d chunks stored in pgvector.", paper_id, chunk_index)
     return chunk_index
 
 
-def delete_paper_chunks(user_id: str, paper_id: str) -> None:
+def delete_paper_chunks(sb: Client, user_id: str, paper_id: str) -> None:
     """
-    Remove all chunks for a paper from the user's ChromaDB collection.
+    Remove all chunks for a paper from paper_chunks.
     Best-effort — never raises.
     """
     try:
-        chroma = _get_chroma()
-        col = chroma.get_or_create_collection(name=f"user_{user_id}")
-        col.delete(where={"paper_id": paper_id})
-        logger.info("Deleted chunks for paper %s from ChromaDB.", paper_id)
+        sb.table("paper_chunks").delete().eq("paper_id", paper_id).eq("user_id", user_id).execute()
+        logger.info("Deleted chunks for paper %s from pgvector.", paper_id)
     except Exception as exc:
         logger.warning("Could not delete chunks for paper %s: %s", paper_id, exc)
