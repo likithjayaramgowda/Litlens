@@ -1,5 +1,4 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
-import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
@@ -8,7 +7,13 @@ export async function GET(request: NextRequest) {
   const next = searchParams.get("next") ?? "/dashboard";
 
   if (code) {
-    const cookieStore = await cookies();
+    const safeNext = next.startsWith("/") ? next : "/dashboard";
+
+    // Create the redirect response FIRST so setAll can write cookies onto it.
+    // If we used cookies() from next/headers here, those cookies would be set
+    // on an implicit response that NextResponse.redirect() does not inherit,
+    // causing the new session to be silently dropped.
+    const redirectResponse = NextResponse.redirect(`${origin}${safeNext}`);
 
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -16,11 +21,11 @@ export async function GET(request: NextRequest) {
       {
         cookies: {
           getAll() {
-            return cookieStore.getAll();
+            return request.cookies.getAll();
           },
           setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
             cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
+              redirectResponse.cookies.set(name, value, options)
             );
           },
         },
@@ -30,9 +35,7 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (!error) {
-      // Ensure next is a relative path to prevent open-redirect attacks.
-      const safeNext = next.startsWith("/") ? next : "/dashboard";
-      return NextResponse.redirect(`${origin}${safeNext}`);
+      return redirectResponse;
     }
   }
 
