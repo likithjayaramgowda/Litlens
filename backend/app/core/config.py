@@ -26,9 +26,6 @@ class Settings(BaseSettings):
     # ES256/RS256 projects verify via JWKS; this field can be left empty for those.
     SUPABASE_JWT_SECRET: str = ""
 
-    CHROMA_HOST: str = "localhost"
-    CHROMA_PORT: int = 8000
-
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 
     # ── OpenRouter (server-side, never exposed to users) ─────────────────────

@@ -186,6 +186,15 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-slate-950 text-white overflow-x-hidden">
 
+      {/* ── Landing nav ──────────────────────────────────────────── */}
+      <nav className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-slate-800/60 bg-slate-950/90 px-6 backdrop-blur">
+        <span className="text-base font-bold tracking-tight text-white">LitLens</span>
+        <Button asChild variant="outline" size="sm"
+          className="border-slate-700 bg-slate-900/60 text-slate-200 hover:bg-slate-800 hover:text-white">
+          <Link href="/login">Sign in</Link>
+        </Button>
+      </nav>
+
       {/* ── Hero ─────────────────────────────────────────────── */}
       <section className="relative flex min-h-[calc(100vh-3.5rem)] flex-col items-center justify-center px-4 text-center">
 

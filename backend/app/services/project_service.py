@@ -67,9 +67,10 @@ def get_project(project_id: str, user_id: str) -> dict | None:
 
 def get_project_paper_ids(project_id: str, user_id: str) -> list[str]:
     """
-    Return all paper_ids belonging to a project.
+    Return paper_ids for all *ready* papers in a project.
 
-    Used by the retrieval service to scope ChromaDB queries.
+    Only includes papers with status='ready' so ChromaDB lookups are never
+    attempted for papers whose chunks haven't been embedded yet.
     Returns empty list on any error.
     """
     try:
@@ -79,6 +80,7 @@ def get_project_paper_ids(project_id: str, user_id: str) -> list[str]:
             .select("id")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
+            .eq("status", "ready")
             .execute()
         )
         return [row["id"] for row in (result.data or [])]

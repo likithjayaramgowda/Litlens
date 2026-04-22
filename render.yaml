@@ -1,0 +1,50 @@
+# Render Blueprint — deploys the LitLens backend as a Docker web service.
+# Frontend is deployed separately on Vercel (see README).
+#
+# Usage:
+#   1. Push this repo to GitHub.
+#   2. In the Render dashboard → "New Blueprint" → connect your repo.
+#   3. Fill in the environment variable values marked sync: false.
+#   4. Deploy.
+
+services:
+  - type: web
+    name: litlens-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # Use "starter" ($7/mo) or higher so the persistent disk is supported.
+    # The free tier has no persistent disk — ChromaDB data is lost on restart.
+    plan: starter
+    envVars:
+      # Supabase — copy from Supabase dashboard → Project Settings → API
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # OpenRouter — free-tier LLM key (sk-or-v1-...)
+      - key: OPENROUTER_API_KEY
+        sync: false
+
+      # Daily query limits
+      - key: DAILY_QUERY_LIMIT
+        value: "50"
+      - key: DEMO_QUERY_LIMIT
+        value: "10"
+
+      # CORS — set to your Vercel frontend URL
+      # e.g. '["https://litlens.vercel.app"]'
+      - key: CORS_ORIGINS
+        sync: false
+
+    # Persistent disk keeps ChromaDB data across deploys and restarts.
+    # Mount path must match _CHROMA_PATH in backend/app/core/chroma.py (/app/chroma_db).
+    disk:
+      name: litlens-chroma
+      mountPath: /app/chroma_db
+      sizeGB: 1

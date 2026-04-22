@@ -20,6 +20,7 @@ import {
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { loadLLMSettings } from "@/components/settings-modal";
+import { toast } from "@/components/toast";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -30,12 +31,12 @@ const ANIMATION_STYLES = `
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-@keyframes dotBounce {
-  0%, 80%, 100% { transform: translateY(0);    opacity: 0.35; }
-  40%           { transform: translateY(-7px); opacity: 1;    }
+@keyframes thinkPulse {
+  0%, 100% { opacity: 0.4; }
+  50%       { opacity: 1; }
 }
-.msg-enter  { animation: fadeSlideIn 0.22s ease-out both; }
-.dot-bounce { animation: dotBounce 1.2s infinite ease-in-out; }
+.msg-enter    { animation: fadeSlideIn 0.22s ease-out both; }
+.think-pulse  { animation: thinkPulse 1.4s ease-in-out infinite; }
 `;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ interface Message {
   model_used?: string;
   isStreaming?: boolean;
   isPending?: boolean;
+  pendingTier?: Tier;
 }
 
 interface Conversation {
@@ -102,19 +104,19 @@ function formatRelative(iso: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-// ── Typing indicator ──────────────────────────────────────────────────────────
+// ── Thinking indicator ────────────────────────────────────────────────────────
 
-function TypingIndicator() {
+const TIER_THINKING: Record<Tier, string> = {
+  quick:          "Thinking…",
+  deep:           "Analyzing across papers…",
+  "long-context": "Processing long context…",
+};
+
+function ThinkingIndicator({ tier }: { tier: Tier }) {
   return (
-    <div className="flex items-center gap-1.5 px-1 py-1">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="dot-bounce h-2.5 w-2.5 rounded-full bg-violet-400"
-          style={{ animationDelay: `${i * 0.15}s` }}
-        />
-      ))}
-    </div>
+    <span className="think-pulse text-sm text-violet-400 font-medium px-1">
+      {TIER_THINKING[tier]}
+    </span>
   );
 }
 
@@ -167,7 +169,7 @@ function MessageBubble({ message }: { message: Message }) {
         }`}
       >
         {message.isPending && !message.content ? (
-          <TypingIndicator />
+          <ThinkingIndicator tier={message.pendingTier ?? "quick"} />
         ) : (
           <>
             {message.content}
@@ -282,6 +284,7 @@ export default function ChatInterface({
   const [conversations, setConversations]   = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId]     = useState<string | null>(initialConvId ?? null);
   const [messages, setMessages]             = useState<Message[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [input, setInput]                   = useState("");
   const [tier, setTier]                     = useState<Tier>("quick");
   const [isStreaming, setIsStreaming]        = useState(false);
@@ -353,6 +356,7 @@ export default function ChatInterface({
 
   useEffect(() => {
     if (!activeConvId) { setMessages([]); return; }
+    setLoadingMessages(true);
     async function load() {
       try {
         const token = await getToken();
@@ -361,6 +365,7 @@ export default function ChatInterface({
         });
         if (r.ok) setMessages(await r.json());
       } catch { /* non-critical */ }
+      finally { setLoadingMessages(false); }
     }
     load();
   }, [activeConvId, getToken]);
@@ -391,7 +396,8 @@ export default function ChatInterface({
       });
       setConversations((prev) => prev.filter((c) => c.id !== convId));
       if (activeConvId === convId) { setActiveConvId(null); setMessages([]); }
-    } catch { /* non-critical */ }
+      toast.success("Conversation deleted");
+    } catch { toast.error("Failed to delete conversation"); }
   }, [getToken, activeConvId]);
 
   // ── Send message ───────────────────────────────────────────────────────────
@@ -403,7 +409,7 @@ export default function ChatInterface({
 
     const userMsg: Message  = { id: `u-${Date.now()}`, role: "user", content: text.trim() };
     const aId = `a-${Date.now()}`;
-    const aMsg: Message = { id: aId, role: "assistant", content: "", sources: [], isStreaming: true, isPending: true };
+    const aMsg: Message = { id: aId, role: "assistant", content: "", sources: [], isStreaming: true, isPending: true, pendingTier: tier };
     setMessages((prev) => [...prev, userMsg, aMsg]);
 
     try {
@@ -509,7 +515,7 @@ export default function ChatInterface({
       <style dangerouslySetInnerHTML={{ __html: ANIMATION_STYLES }} />
 
       <div
-        className="flex h-screen overflow-hidden text-white"
+        className="flex h-full overflow-hidden text-white"
         style={{ background: "linear-gradient(135deg,#0a0a14 0%,#0d0a1a 50%,#080810 100%)" }}
       >
 
@@ -616,36 +622,19 @@ export default function ChatInterface({
               </h1>
             </div>
 
-            {/* Tier toggle */}
-            <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">
-              {TIERS.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setTier(t.id)}
-                  disabled={usingByok}
-                  title={usingByok ? "Using your DeepSeek key" : t.tooltip}
-                  className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all ${
-                    tier === t.id && !usingByok
-                      ? "bg-gradient-to-r from-violet-600 to-violet-500 text-white shadow-sm shadow-violet-900/50"
-                      : "text-slate-500 hover:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
-                  }`}
-                >
-                  {t.icon}
-                  <span className="hidden sm:inline">{t.label}</span>
-                </button>
-              ))}
-              {usingByok && (
-                <span className="ml-1 rounded-lg bg-slate-800 px-3 py-2 text-sm text-slate-400">
-                  DeepSeek BYOK
-                </span>
-              )}
-            </div>
           </header>
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-5 py-8">
-            {isEmpty ? (
+            {loadingMessages ? (
+              <div className="mx-auto max-w-3xl space-y-6">
+                {[{ w: "70%", side: "start" }, { w: "55%", side: "end" }, { w: "80%", side: "start" }].map((s, i) => (
+                  <div key={i} className={`flex flex-col gap-2 ${s.side === "end" ? "items-end" : "items-start"}`}>
+                    <div className="animate-pulse rounded-2xl bg-slate-800/80 px-5 py-4 h-12" style={{ width: s.w }} />
+                  </div>
+                ))}
+              </div>
+            ) : isEmpty ? (
               <div className="flex h-full flex-col items-center justify-center gap-8 text-center">
                 <div className="space-y-4">
                   <div
@@ -699,7 +688,34 @@ export default function ChatInterface({
             className="shrink-0 border-t border-slate-800/70 px-5 py-5"
             style={{ background: "rgba(10,10,20,0.96)" }}
           >
-            <div className="mx-auto max-w-3xl">
+            <div className="mx-auto max-w-3xl space-y-2.5">
+
+              {/* ── Tier picker pill ── */}
+              {!usingByok ? (
+                <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1 w-fit">
+                  {TIERS.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setTier(t.id)}
+                      title={t.tooltip}
+                      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                        tier === t.id
+                          ? "bg-gradient-to-r from-violet-600 to-violet-500 text-white shadow-sm shadow-violet-900/50"
+                          : "text-slate-500 hover:text-slate-300"
+                      }`}
+                    >
+                      {t.icon}
+                      <span>{t.label}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-1.5 w-fit">
+                  <span className="text-xs text-slate-400">DeepSeek BYOK</span>
+                </div>
+              )}
+
               <div className="flex items-end gap-3 rounded-2xl border border-slate-700/60 bg-slate-900/80 px-5 py-4 focus-within:border-violet-500/50 focus-within:shadow-lg focus-within:shadow-violet-900/20 transition-all duration-200">
                 <textarea
                   ref={textareaRef}
@@ -723,7 +739,7 @@ export default function ChatInterface({
                     : <Send className="h-4 w-4 text-white" />}
                 </button>
               </div>
-              <p className="mt-2.5 text-center text-xs text-slate-600">
+              <p className="text-center text-xs text-slate-600">
                 <kbd className="rounded border border-slate-800 px-1.5 py-0.5 font-mono">Enter</kbd>{" "}
                 to send ·{" "}
                 <kbd className="rounded border border-slate-800 px-1.5 py-0.5 font-mono">Shift+Enter</kbd>{" "}

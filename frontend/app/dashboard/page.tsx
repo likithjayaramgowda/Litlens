@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import SettingsModal from "@/components/settings-modal";
 import QuotaBadge from "@/components/quota-badge";
 import ProjectDashboard from "@/components/project-dashboard";
+import AppShell from "@/components/app-shell";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -15,16 +16,16 @@ export default async function DashboardPage() {
     "researcher";
 
   return (
-    <main className="min-h-screen text-white" style={{ background: "linear-gradient(135deg, #0a0a14 0%, #0d0a1a 60%, #080810 100%)" }}>
-      <div className="mx-auto max-w-7xl px-4 py-10">
+    <AppShell>
+      <div className="mx-auto max-w-7xl px-6 py-8">
 
         {/* ── Page header ── */}
-        <div className="mb-10 flex items-start justify-between gap-4">
+        <div className="mb-8 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-white">
+            <h1 className="text-2xl font-bold tracking-tight text-white">
               My Research
             </h1>
-            <p className="mt-1 text-slate-400">
+            <p className="mt-1 text-sm text-slate-400">
               Welcome back,{" "}
               <span className="text-slate-200">{displayName}</span>.
               Organise your papers into projects and start analysing.
@@ -39,6 +40,6 @@ export default async function DashboardPage() {
         {/* ── Project-aware dashboard ── */}
         <ProjectDashboard />
       </div>
-    </main>
+    </AppShell>
   );
 }

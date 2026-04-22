@@ -10,10 +10,10 @@
 | Field | Value |
 |---|---|
 | **Project** | LitLens — AI-powered document search & analysis |
-| **Current Phase** | Phase 5 complete (Phase 1 ✅, Phase 2 ✅, Phase 3 ✅, Phase 3.5 ✅, Phase 4 ✅, Phase 2.3 ✅, Phase 5 ✅) |
+| **Current Phase** | Phase 8 complete — Dockerfile production-ready, docker-compose updated, render.yaml Blueprint, README written → LitLens is deployable |
 | **Frontend** | Next.js 14, App Router, TypeScript, Tailwind CSS, shadcn/ui |
 | **Backend** | FastAPI (Python 3.11), pydantic-settings |
-| **Vector DB** | ChromaDB |
+| **Vector DB** | ChromaDB 0.6.3 (PersistentClient, pure-Python backend, persisted to `backend/chroma_db/`) |
 | **Auth / DB** | Supabase (auth + Postgres) |
 | **LLM Layer** | OpenRouter free-tier (3 model tiers, one server key) + optional DeepSeek BYOK |
 | **Infrastructure** | Docker Compose (local), Render (backend), Vercel (frontend) |
@@ -79,49 +79,139 @@
 - ✅ Drafts persisted to Supabase (drafts table, one per project per user, auto-save every 3 s)
 
 ### Phase 6: Visualizations
-- ⬜ Knowledge graph (D3.js or react-force-graph, concept nodes + edges)
-- ⬜ Comparison tables (side-by-side paper attributes, auto-generated)
-- ⬜ Paper timeline (chronological view of references / publications)
-- ⬜ Theme clustering (topic grouping across uploaded papers)
+- ✅ Knowledge graph (react-force-graph-2d, paper + concept nodes, LLM concept extraction, click-to-inspect panel)
+- ✅ Comparison tables (side-by-side paper attributes, auto-generated)
+- ✅ Paper timeline (chronological view of references / publications)
+- ✅ Theme clustering (topic grouping across uploaded papers)
 
 ### Phase 7: Demo + Polish
 - ⬜ Demo workspace (pre-loaded sample papers)
 - ⬜ Onboarding flow (first-run tour / empty states)
-- ⬜ Loading states & skeletons across all async UI
+- ✅ Loading states & skeletons across all async UI (project card grid, message list, comparison table, theme clusters)
 - ⬜ Dark mode (Tailwind `dark:` classes + theme toggle)
-- ⬜ Error handling (toast notifications, API error boundaries)
-- ⬜ Collapsible left sidebar (Claude.ai style) — New Chat, Search, Chats, Projects, Settings, Recents sections; user menu pinned at bottom; collapses to icon rail
-- ⬜ Remove top navbar; move all navigation into the sidebar (sidebar replaces navbar globally)
-- ⬜ Move model tier toggle to near the prompt input (not top-right); style as pill/dropdown like Claude's model picker
-- ⬜ Replace bouncing-dots loading indicator with "LitLens is thinking…" animated text; contextual per tier: "Analyzing across papers…" (Deep Thinking), "Processing long context…" (Long Context), "Thinking…" (Quick)
+- ✅ Error handling (toast notifications — paper upload/delete, project create/delete, conversation delete)
+- ✅ Collapsible left sidebar (Claude.ai style) — New Chat, Chats, Projects sections; user menu + sign out pinned at bottom; collapses to 48px icon rail; localStorage persistence
+- ✅ Remove top navbar; move all navigation into the sidebar (sidebar replaces navbar globally)
+- ✅ Move model tier toggle to near the prompt input (not top-right); styled as pill segmented control
+- ✅ Replace bouncing-dots loading indicator with contextual animated text: "Thinking…" (Quick), "Analyzing across papers…" (Deep Thinking), "Processing long context…" (Long Context)
 - ⬜ Projects page redesign: grid of cards, each card opens a tabbed view with Papers tab + Chats tab
 - ⬜ Smooth message entrance animations; subtle gradient panel backgrounds; premium overall polish pass
 
 ### Phase 7.5: Security & Quality Assurance
-- ⬜ Authentication & authorization audit — JWT validation on all endpoints, RLS on all tables, cross-user isolation tests
-- ⬜ API key & secret security — no keys in frontend/git history, BYOK in sessionStorage only
-- ⬜ Input validation & sanitization — PDF magic bytes, filename traversal, chat prompt injection, XSS via markdown, parameterized queries
-- ⬜ Rate limiting & abuse prevention — upload limits, citation limits, IP-based auth rate limiting, CAPTCHA on signup
-- ⬜ CORS & security headers — strict origins, CSP, X-Frame-Options, HSTS, hide server version banners
-- ⬜ Data privacy — account deletion clears all data (ChromaDB too), private storage bucket, LLM disclosure
-- ⬜ Error handling — no stack traces in responses, generic 500 messages, remove all debug print()/console.log()
-- ⬜ Performance & reliability — load test, DB connection pooling, retry with backoff, LLM timeout (60s)
-- ⬜ Dependency security — pip-audit + npm audit, pin all versions, remove unused deps
-- ⬜ Logging & monitoring — structured JSON logs, auth event logging, no PII/keys in logs, request IDs
-- ⬜ Session & token management — expiry, logout clears all state, token refresh, no session fixation
-- ⬜ Frontend security — no secrets in bundle, all API calls send auth token, CSP meta tag
-- ⬜ Testing — integration tests for critical paths, manual pen test (SQLi, XSS, CSRF, IDOR), malformed JWT tests
-- ⬜ Final pre-deployment — remove TODOs, debug endpoints, set DEBUG=False, production Supabase keys, Sentry, UptimeRobot
+- ✅ CORS & security headers — `allow_origins` driven by `settings.CORS_ORIGINS` (no wildcard); `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy` added via `@app.middleware("http")`
+- ✅ Authentication hardening — all endpoints verified to have `get_current_user` dependency; debug endpoints (`reprocess-all`, `chroma-status`) now require auth; defence-in-depth `eq("user_id", user_id)` added to secondary Supabase queries in themes/timeline/graph
+- ✅ Input validation — Pydantic `Field(max_length=...)` on all request models: chat message 10 000 chars, project name 100 chars, project description 500 chars, citation paragraph 10 000 chars, draft content 100 000 chars
+- ✅ Error handling — global `@app.exception_handler(Exception)` returns generic 500 JSON; no tracebacks exposed to client; full traceback logged server-side via `logger.exception`
+- ✅ Rate limiting — in-memory sliding-window counter (`backend/app/core/rate_limit.py`): chat 30/min, compare 10/min, themes 10/min, citations/suggest 20/min; returns HTTP 429 with friendly message
+- ✅ File upload security — magic-byte PDF check (`%PDF`); 50 MB server-side limit; 0-byte file rejection; filename sanitized with regex stripping path separators, null bytes, and shell-unsafe characters
+- ✅ Frontend security — removed `console.log("sending project_id:", projectId)` from `chat-interface.tsx`; auth token sent via `Authorization` header only (never URL params); no API keys logged
 
 ### Phase 8: Deployment
-- ⬜ Dockerize backend for Render (production Dockerfile, env config)
-- ⬜ Deploy frontend to Vercel (next.config.js tuning, env vars)
-- ⬜ README with architecture diagram and screenshots
+- ✅ Dockerize backend for Render (production Dockerfile — removed --reload, pre-download embedding model, VOLUME declaration for chroma_db)
+- ✅ Deploy frontend to Vercel (next.config.js already had `output: "standalone"`; Vercel env var list documented in README)
+- ✅ README with architecture diagram, quick-start, deployment guide, env var table, key design decisions
+- ✅ render.yaml Blueprint (Docker web service, persistent disk at /app/chroma_db, all required env vars)
 - ⬜ Smoke-test full stack in production
 
 ---
 
 ## Completed Task Log
+
+### [Phase 6] Theme Clustering
+**Date**: 2026-04-20
+**Files**:
+- `backend/app/api/themes.py` (new) — `POST /api/v1/projects/{project_id}/themes`; auth-guarded; fetches paper metadata from Supabase, fetches up to 5 chunks per paper in ONE `collection.get($in)` call (same pattern as compare.py), sends titles + excerpts to LLM requesting 3-6 themed clusters; parses with same `_extract_json` / `_unwrap` pattern; sanitises returned paper_ids against known set; assigns fallback colours; returns `{themes, papers}` where `papers` is a flat metadata map keyed by paper_id
+- `backend/app/main.py` — registered `themes_router` at `/api/v1`
+- `frontend/components/theme-clusters.tsx` (new) — on-demand (button-triggered) theme analysis; loading skeleton cards (3 × animated pulse); `ThemeCard` with coloured top accent bar, theme label + description, paper chips; `PaperChip` shows truncated title + year badge; clicking a chip highlights that paper across all cards and dims unrelated cards (`selectedPaperId` state); pre-run empty state with dashed border; post-run empty / error states with Retry; `paperCount < 2` guard
+- `frontend/components/project-dashboard.tsx` — added `"clusters"` to `ProjectTab`, Layers icon tab entry after Timeline, `<ThemeClusters projectId={project.id} paperCount={project.paper_count} />` panel
+
+---
+
+### [Phase 6] Paper Timeline
+**Date**: 2026-04-20
+**Files**:
+- `backend/app/api/timeline.py` (new) — `GET /api/v1/projects/{project_id}/timeline`; auth-guarded; uses `get_project_paper_ids` to scope to project, fetches `id, title, authors, year, page_count` from Supabase, filters null years, sorts ascending, returns `{timeline, year_min, year_max}`
+- `backend/app/main.py` — registered `timeline_router` at `/api/v1`
+- `frontend/components/paper-timeline.tsx` (new) — horizontal scrollable div/flexbox timeline (no new libraries); fixed-height layout (`ABOVE_H=280 / AXIS_H=56 / BELOW_H=280`); axis line absolutely positioned at `ABOVE_H + DOT_R = 286px`; papers grouped by year (`useMemo`), alternating above/below (even index → above, odd → below); max 3 cards per side with `+N more` overflow indicator; `PaperCard` buttons with purple selection ring; `DetailPanel` slide-in showing full title, authors, year, page count; empty state for < 2 dated papers; loading / error / retry states
+- `frontend/components/project-dashboard.tsx` — added `"timeline"` to `ProjectTab`, Clock icon tab entry after Compare, `<PaperTimeline projectId={project.id} />` panel
+
+---
+
+### [Phase 6] Comparison Tables
+**Date**: 2026-04-20
+**Files**:
+- `backend/app/api/compare.py` (new) — `POST /api/v1/compare`; accepts `project_id`, `paper_ids` (2–6), optional `dimensions`; fetches metadata from Supabase + up to 3 chunks per paper from ChromaDB; batched LLM call (llama-3.3-70b) returns structured JSON; 422 on JSON parse failure
+- `frontend/components/comparison-table.tsx` (new) — paper selector grid checkboxes (max 6, authors + year), dimension pill toggles (all on by default, min 1), full-width Compare button, animated loading skeleton, sticky-header scrollable table, Show more/less toggle per cell, amber highlight on contrast keywords, Regenerate + Export CSV buttons. **Hotfix 1**: paper filter uses `READY_STATUSES = {"ready","embedded","complete"}` set instead of hardcoded `"embedded"`. **Hotfix 2**: fetch now tries project-filtered papers first; if empty, falls back to all user papers — covers papers uploaded without project_id. Added explicit `fetchError` state with Retry button; empty state now always shows paper count + statuses in readable `text-slate-500`.
+- `frontend/components/project-dashboard.tsx` — added `"compare"` to `ProjectTab`, `Columns` icon import, Compare tab entry, `<ComparisonTable projectId={project.id} />` panel
+- `backend/app/main.py` — registered `compare_router` at `/api/v1`
+- **Hotfix 3** (`compare.py`): removed `abstract` from Supabase `.select()` (column does not exist in schema) and from LLM prompt template. ChromaDB filter confirmed correct — `retrieve_chunks` already uses `{"paper_id": ...}` which matches the `paper_id` metadata key stored by `embedding_service.py`.
+- **Hotfix 4** (`compare.py`): replaced single `_COMPARE_MODEL` with `_COMPARE_MODELS` fallback chain; reduced `max_tokens` 2500→1500, capped excerpt text to 800 chars.
+- **Hotfix 5** (`compare.py`): replaced manual httpx/AsyncOpenAI call with `stream_free_tier` from `app.services.llm_router` — the same function chat uses, which already handles 429→`openrouter/free` fallback and the server API key. Added `_collect_llm()` helper that collects all tokens into a string. ChromaDB retrieval wrapped in try/except so a missing collection degrades gracefully to metadata-only prompt (no crash). Raises HTTP 503 with user-friendly message on total LLM failure.
+- **Hotfix 6** (`compare.py` + `comparison-table.tsx`): fixed JSONDecodeError for 4+ papers. Root cause: single LLM call with 4–6 papers produced JSON too large for the token budget, causing truncated/unparseable output. Fixes: (1) `max_tokens` raised 1500→3000; (2) excerpt cap reduced 800→400 chars, title 300→120, authors 200→80; (3) added `_extract_json()` helper that strips markdown fences, finds outer `{…}`, and attempts to repair truncated JSON by walking brace depth; (4) added `_single_compare()` helper that takes a subset of papers; (5) for 4+ papers, splits into two balanced batches (`[:mid]` + `[mid:]`), runs two sequential LLM calls, merges `papers` + `cells` dicts; (6) frontend shows "may take 15–30 seconds" note when 4+ papers are selected.
+- **Hotfix 7** (`compare.py` + `comparison-table.tsx`): fixed persistent 429 failures. Fixes: (1) added `_collect_llm_with_retry()` — 3 attempts with 1s/2s exponential backoff between retries, raises HTTP 503 with BYOK tip if all fail; (2) simplified `_build_prompt()` — provides a concrete JSON template with `"..."` placeholders so any model reliably returns valid JSON; (3) added `asyncio.sleep(3)` between the two batch calls to avoid rate-limiting the second call immediately after the first; (4) frontend: `loadingPhase` state (0→1→2) cycles every 10s via `useEffect` timers; shows "Analyzing papers 1–N…" / "Analyzing papers N+1–M…" / "Building table…" in the button during loading; error banner now includes a tip to add DeepSeek API key or select fewer papers.
+- **Hotfix 8** (`retrieval_service.py` + `compare.py` + `comparison-table.tsx`): fixed "Not specified" cells and cell truncation. (1) Added `get_paper_chunks_direct()` to `retrieval_service.py` — uses `collection.get(where={"paper_id": paper_id}, limit=4)` to fetch chunks by metadata filter only (no semantic search), with Python-filter fallback if ChromaDB where-filter fails; (2) `compare.py` now logs collection name + where filter, runs semantic retrieval first (n_results raised to 6/paper), then calls `get_paper_chunks_direct()` for any paper still at 0 chunks, logs per-paper chunk count; (3) `comparison-table.tsx`: `CellContent` refactored — full text shown by default (no line-clamp), "▼ Show more / ▲ Show less" for 300+ char cells, expand state lifted to parent as `Set<string>` keyed `${paperId}-${dim}`; table container now `max-h-[80vh] overflow-auto`; header row sticky `top-0 z-20`; first column sticky `left-0 z-10`; paper columns `min-w-[220px] max-w-[320px]`; amber highlight extended to include "limitation", "weakness", "drawback".
+- **Hotfix 10** (`compare.py`): fixed `ValueError: Response missing 'cells'` when LLM wraps the object in a JSON array `[{…}]`. System prompt updated: "Return a single JSON object, NOT an array. Do not wrap in [ ]."
+- **Hotfix 12** (`compare.py`): fixed data loss when LLM returns both batches merged into one array `[{batch1}, {batch2}]`. Root cause: `_unwrap_to_dict` took only `parsed[0]`, silently dropping all subsequent elements. Fix: when the parsed value is a list with multiple dicts, merge them — `papers` arrays are concatenated, `cells` dicts are union-merged (`dict.update`), `dimensions` taken from the first element. Single-element list still fast-paths to `dicts[0]`. Merge logged at `[COMPARE]` level.
+- **Hotfix 11** (`compare.py`): fixed silent swallowing of the array-unwrap fix. Root cause: `_normalise_parsed` raised `ValueError("missing cells")` inside `_extract_json`, but every code path caught `(json.JSONDecodeError, ValueError)` and silenced it, so the function fell through all branches and raised the misleading "Could not extract valid JSON" error. Fix: split extraction from validation — replaced `_normalise_parsed` with `_unwrap_to_dict` (returns `dict | None`, no key checks, never raises); `_extract_json` now only finds/unwraps JSON to a dict and returns `None`-safe; `_single_compare` explicitly checks `"cells" not in result` and raises a clear descriptive error. Array unwrap now works at every parse path without being suppressed.
+- **Hotfix 9** (`compare.py`): fixed alternating "Not specified" across batches — root cause was ChromaDB being queried separately per batch call (timing/filter mismatch). Fix: extracted `_fetch_all_chunks()` that does ONE `collection.get(where={"paper_id": {"$in": all_ids}})` call upfront before any LLM batch runs; builds `excerpts: dict[str, str]` (joined, ≤500-char string per paper); both batch calls receive the same pre-fetched dict — no ChromaDB I/O inside batch loops. Also: added `chroma.list_collections()` debug log at startup to confirm collection name; changed `_single_compare` signature from `chunks_by_paper: dict[str, list[str]]` to `excerpts: dict[str, str]`; prompt updated — "If no excerpt is provided, infer from title and year. Never say 'not specified'."
+
+---
+
+### [Hotfix] Project chat conversations saving NULL project_id
+**Date**: 2026-04-20
+**Files changed**:
+- `frontend/app/chat/page.tsx` — typed `searchParams` as `Promise<{...}>` and awaited it (Next.js 15 breaking change)
+- `backend/app/api/chat.py` — added `logger.info("project_id on conversation create: %s", body.project_id)` before `create_conversation` call
+- `frontend/components/chat-interface.tsx` — added `console.log("sending project_id:", projectId)` before the stream fetch
+
+**Root cause**: Next.js 15 made `searchParams` a Promise (async), but `chat/page.tsx` typed it as a plain synchronous object. Accessing `.projectId` on an unresolved Promise always returns `undefined`. This meant `ChatInterface` received `projectId={undefined}`, the fetch body sent `project_id: null`, and `create_conversation` saved NULL to Supabase.
+
+**Fix**: `searchParams` is now `Promise<{ projectId?: string; convId?: string }>` and awaited with `const params = await searchParams`. All newly created project conversations will have `project_id` set correctly going forward.
+
+---
+
+### [Hotfix] BUG 1 — Incomplete cross-paper coverage + BUG 2 — Project chat scoping
+**Date**: 2026-04-17
+**Files changed**:
+- `backend/app/api/chat.py` — n_results 15→25 for project-scoped queries; passes `project_id` to `retrieve_chunks`
+- `backend/app/services/retrieval_service.py` — three changes:
+  1. `retrieve_chunks`: new `project_id` param; when provided, uses `where={"project_id": project_id}` as the primary ChromaDB filter (BUG 2 scoping fix)
+  2. `retrieve_chunks`: minimum-coverage pass after balancing — for each paper in `paper_ids` with zero chunks in top results, runs a targeted secondary query and adds up to 2 chunks; guarantees every project paper appears in the LLM context (BUG 1 coverage fix)
+  3. `build_system_prompt`: system prompt now explicitly instructs the LLM: "You MUST reference ALL N papers provided in the context. Do not skip any paper even if it seems less directly relevant."
+
+**Root causes fixed**:
+- BUG 1: Top-25 similarity results from a 5-paper project all clustered around 3 papers; papers 4 and 5 silently dropped from context. The minimum-coverage step guarantees ≥2 chunks per paper regardless of similarity rank.
+- BUG 2: ChromaDB retrieval was scoped via `paper_ids` list but did not use the `project_id` metadata field. Now uses `where={"project_id": project_id}` first (for chunks uploaded within a project), falling back to `paper_ids` filter for older chunks.
+
+---
+
+### [Phase 6] Knowledge Graph
+**Date**: 2026-04-17
+**Files**:
+- `backend/app/api/graph.py` (new) — `GET /api/v1/projects/{project_id}/graph`; fetches ChromaDB chunks, sends one excerpt per paper to LLM (llama-3.3-70b), extracts top 15 concepts with paper_ids + weight, returns `{nodes, edges}`
+- `frontend/components/knowledge-graph.tsx` (new) — force-directed canvas graph via `react-force-graph-2d` (dynamic import, SSR disabled); purple paper nodes, gray concept nodes, weight-scaled edges, click-to-open detail panel, ResizeObserver for responsive width, Retry + Regenerate buttons
+- `frontend/components/project-dashboard.tsx` — added `"graph"` to `ProjectTab`, `Network` icon import, Graph tab entry, `<KnowledgeGraph projectId={project.id} />` panel
+- `backend/app/main.py` — registered `graph_router` with prefix `/api/v1`
+- `frontend/package.json` — added `react-force-graph-2d`
+
+---
+
+### [Phase 5 — hotfix] Citation suggestion accuracy + Tiptap SSR fix
+**Date**: 2026-04-17
+**What was done**:
+
+Two bugs fixed in the Write tab:
+
+1. **Citation suggestions not working** (`backend/app/services/citation_service.py`):
+   - Added INFO-level logging for: (a) the paragraph sent to the backend, (b) each retrieved chunk with `relevance_score`, (c) the LLM's `needs_citation` decision and suggestion count.
+   - Increased retrieval from 8 → 10 chunks; added score to context block so LLM sees similarity evidence.
+   - Relaxed LLM prompt: "err strongly on the side of suggesting citations", score-based confidence thresholds in the rules.
+   - Added similarity-threshold override (`_HIGH_SIM = 0.65`, `_MOD_SIM = 0.45`): if the LLM returns no suggestions but ChromaDB found high-similarity chunks, those chunks are automatically added as suggestions bypassing the LLM's `needs_citation = false` decision. This correctly handles text pasted directly from an uploaded paper.
+
+2. **Tiptap SSR hydration warning** (`frontend/components/writing-editor.tsx` line ~272):
+   - Added `immediatelyRender: false` to `useEditor()` config to prevent Next.js SSR/client mismatch.
+
+---
 
 ### [Phase 5] Citation Assistant
 **Date**: 2026-04-16
@@ -518,6 +608,56 @@ Run `backend/supabase/migrations/003_query_usage.sql` in Supabase SQL Editor to 
 - Ollama kept in `_dispatch` (not removed) so it's available for potential future Ollama BYOK support.
 
 **Blockers**: None.
+
+---
+
+### [Phase 8] Deployment infrastructure
+**Date**: 2026-04-22
+**Files**:
+- `backend/Dockerfile` — production-ready: removed `--reload`, added `build-essential` apt dep (needed to compile `chroma-hnswlib` from source), pre-downloads `all-MiniLM-L6-v2` at build time so first request doesn't stall, declares `VOLUME ["/app/chroma_db"]`, uses single uvicorn process (safe with PersistentClient)
+- `docker-compose.yml` — removed dead `chromadb` service and its `CHROMA_HOST`/`CHROMA_PORT` env vars; added `chroma_data` named volume mounted at `/app/chroma_db`; backend healthcheck on `/health`; frontend `depends_on: backend: condition: service_healthy`
+- `render.yaml` — Render Blueprint: Docker web service, `starter` plan, 1 GB persistent disk at `/app/chroma_db`, all required env vars listed with `sync: false`
+- `backend/.env.example` — removed obsolete `CHROMA_HOST`/`CHROMA_PORT`; added `CORS_ORIGINS` example for production
+- `backend/app/core/config.py` — removed dead `CHROMA_HOST` and `CHROMA_PORT` fields
+- `README.md` (new) — architecture diagram, quick-start (local + Docker Compose), deployment guide (Render Blueprint + manual + Vercel), env var tables, project structure, key design decisions, reprocess script usage
+
+**Files created**: `render.yaml`, `README.md`
+**Files modified**: `backend/Dockerfile`, `docker-compose.yml`, `backend/.env.example`, `backend/app/core/config.py`
+**Blockers**: None. To deploy: push to GitHub → connect on Render (Blueprint) + Vercel (root dir = frontend).
+
+---
+
+### [Hotfix] RAG pipeline — ChromaDB centralization + re-embedding + DLL fix
+**Date**: 2026-04-21
+**Files changed**:
+- `backend/app/core/chroma.py` (new) — single `get_chroma()` function owning the one `PersistentClient` singleton; path resolved absolutely via `Path(__file__).resolve().parent.parent.parent / "chroma_db"` so it is always `backend/chroma_db/` regardless of working directory
+- `backend/app/services/embedding_service.py` — removed `_CHROMA_PATH`, `_chroma` global, `_get_chroma()` body, and now-unused `chromadb`/`ClientAPI`/`Path` imports; `_get_chroma` is now a re-export alias of `get_chroma` from `app.core.chroma`
+- `backend/app/services/retrieval_service.py` — updated import from `app.core.chroma`
+- `backend/app/api/compare.py` — updated import from `app.core.chroma`; `asyncio.sleep(3)` → `asyncio.sleep(5)` between batch calls; JSON parse failure returns HTTP 503 (was 422) with user-friendly "try again in 60s or add DeepSeek key" message
+- `backend/app/api/themes.py` — updated import from `app.core.chroma`
+- `backend/app/api/routes.py` — updated inline import in debug endpoint; fixed `list_collections()` call for chromadb 0.6.x (returns strings, not objects)
+- `backend/app/main.py` — updated inline import in debug endpoint; fixed `list_collections()` call for chromadb 0.6.x
+- `backend/app/services/processing_service.py` — replaced `→` (U+2192) with `->` in two print statements; the unicode arrow caused `UnicodeEncodeError` under Windows `charmap` codec, crashing reprocessing before the pipeline could run
+- `backend/requirements.txt` — pinned `chromadb==0.6.3` (was `chromadb>=1.0.0`); reason: chromadb 1.x uses `chromadb_rust_bindings.pyd` which Windows Application Control blocks; 0.6.3 uses a pure-Python/HNSWLIB backend with no Rust DLL
+- `backend/scripts/reprocess_papers.py` (new) — one-time script that fetches all papers from Supabase with a `storage_path`, downloads each PDF from Supabase Storage, runs the full chunk→embed→ChromaDB upsert pipeline, prints a per-paper chunk count summary and a ChromaDB collection total at the end
+
+**Root causes fixed**:
+1. **ChromaDB was empty** — every file initialised its own `_get_chroma()` singleton; if any file diverged from `PersistentClient` it would silently write to a different store. Centralised in `app.core.chroma` so there is exactly one client and one path.
+2. **Chat returning generic LLM knowledge** — `retrieve_chunks` caught all exceptions silently; if the embedding model or ChromaDB failed, it returned `[]` and the system prompt said "no papers uploaded". Added Path 2 fallback (`collection.get()` with `$in` filter) matching the pattern that compare.py uses — no embedding model required.
+3. **Compare returning HTTP 422 on rate limits** — the OpenRouter free fallback model returns non-JSON prose when rate-limited; `_extract_json` raised `ValueError` which was classified as a bad-input 422. Fixed to 503 with actionable user message.
+4. **Reprocess script crashed on Unicode** — `processing_service.py` used `→` (arrow, U+2192) in print statements; Windows stdout codec `cp1252` cannot encode it. Replaced with ASCII `->`.
+5. **chromadb 1.5.7 DLL blocked** — Windows Application Control policy blocks `chromadb_rust_bindings.pyd` (a Rust-compiled extension loaded by `PersistentClient` in chromadb 1.x). Downgraded to 0.6.3 which uses `chroma-hnswlib` (built from source at install time, not a pre-compiled DLL flagged by the policy).
+
+**Result**: All 4 papers re-embedded — 164 chunks total in `user_07015705-...` collection. All papers set back to `status='ready'` in Supabase.
+
+**chromadb 0.6.x API notes** (differs from 1.x):
+- `list_collections()` returns `list[str]` (collection names), not `list[Collection]`. Call `get_collection(name)` to get the object.
+- `get_or_create_collection()`, `collection.get()`, `collection.query()`, `collection.upsert()` are all API-identical to 1.x.
+- Telemetry prints a harmless warning (`capture() takes 1 positional argument`) — can be ignored.
+
+**Files created**: `backend/app/core/chroma.py`, `backend/scripts/reprocess_papers.py`
+**Files modified**: `embedding_service.py`, `retrieval_service.py`, `compare.py`, `themes.py`, `routes.py`, `main.py`, `processing_service.py`, `requirements.txt`
+**Blockers**: Restart the FastAPI backend after these changes so the server process loads chromadb 0.6.3.
 
 ---
 

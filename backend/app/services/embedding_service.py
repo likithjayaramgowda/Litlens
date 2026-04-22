@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import logging
 
-import chromadb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
 
-from app.core.config import settings
+from app.core.chroma import get_chroma as _get_chroma
 from app.services.pdf_service import PageText
 
 logger = logging.getLogger(__name__)
@@ -29,9 +28,7 @@ _splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=_OVERLAP_CHARS,
 )
 
-# Module-level singletons — initialized lazily to avoid startup delay.
 _model: SentenceTransformer | None = None
-_chroma: chromadb.HttpClient | None = None
 
 
 def _get_model() -> SentenceTransformer:
@@ -41,36 +38,6 @@ def _get_model() -> SentenceTransformer:
         _model = SentenceTransformer(_MODEL_NAME)
         logger.info("Embedding model ready.")
     return _model
-
-
-def _get_chroma() -> chromadb.HttpClient:
-    global _chroma
-    if _chroma is None:
-        host = settings.CHROMA_HOST
-        port = settings.CHROMA_PORT
-        print(f"[EMBED] Connecting to ChromaDB at {host}:{port}…", flush=True)
-        logger.info("Connecting to ChromaDB at %s:%s", host, port)
-        client = chromadb.HttpClient(host=host, port=port)
-        # Probe the connection immediately so a bad host fails fast here
-        # instead of hanging silently inside get_or_create_collection later.
-        try:
-            client.heartbeat()
-            print(f"[EMBED] ChromaDB heartbeat OK ({host}:{port}).", flush=True)
-            logger.info("ChromaDB heartbeat OK at %s:%s", host, port)
-        except Exception as exc:
-            # Clear the cached client so the next call retries the connection.
-            print(
-                f"[EMBED] ERROR: ChromaDB not reachable at {host}:{port} — {exc}\n"
-                f"  If running locally (not Docker), set CHROMA_HOST=localhost and CHROMA_PORT=8001 in .env",
-                flush=True,
-            )
-            raise RuntimeError(
-                f"ChromaDB not reachable at {host}:{port}. "
-                f"If running locally (not Docker), set CHROMA_HOST=localhost CHROMA_PORT=8001 in .env. "
-                f"Original error: {exc}"
-            ) from exc
-        _chroma = client
-    return _chroma
 
 
 def embed_paper(

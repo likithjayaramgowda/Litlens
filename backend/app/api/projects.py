@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.auth import get_current_user
 from app.services.project_service import (
@@ -28,13 +28,13 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class ProjectCreate(BaseModel):
-    name: str
-    description: str | None = None
+    name: str = Field(..., max_length=100)
+    description: str | None = Field(None, max_length=500)
 
 
 class ProjectUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
+    name: str | None = Field(None, max_length=100)
+    description: str | None = Field(None, max_length=500)
 
 
 class ProjectOut(BaseModel):

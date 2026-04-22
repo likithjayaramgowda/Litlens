@@ -29,7 +29,9 @@ from typing import Annotated, AsyncIterator
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.core.rate_limit import rate_limit_check
 
 from app.core.auth import get_current_user
 from app.services.quota_service import is_demo_user, check_quota, increment_usage
@@ -52,7 +54,7 @@ logger = logging.getLogger(__name__)
 # ── Request / response models ──────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., max_length=10_000)
     tier: str = "quick"
     conversation_id: str | None = None
     project_id: str | None = None
@@ -100,6 +102,13 @@ async def chat_stream(
     demo = is_demo_user(user)
     use_byok = bool(x_llm_api_key and x_llm_provider)
 
+    # ── Rate limit ────────────────────────────────────────────────────────────
+    if not rate_limit_check(user_id, "chat", max_calls=30, window_secs=60):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please wait a moment.",
+        )
+
     # ── Quota guard ───────────────────────────────────────────────────────────
     if not use_byok:
         try:
@@ -111,14 +120,44 @@ async def chat_stream(
             )
 
     # ── Retrieval (done before streaming so sources arrive in first SSE event) ──
-    paper_ids: list[str] | None = None
-    if body.project_id:
+    print(
+        f"[CHAT] user={user_id} project_id={body.project_id!r} message={body.message[:60]!r}",
+        flush=True,
+    )
+    project_scoped = bool(body.project_id)
+    chunks: list[dict] = []
+    if project_scoped:
         paper_ids = get_project_paper_ids(body.project_id, user_id)
-        if not paper_ids:
-            # Project exists but has no papers — skip retrieval entirely
-            paper_ids = []
-    chunks = retrieve_chunks(user_id, body.message, n_results=15, paper_ids=paper_ids if paper_ids else None)
-    system_prompt, sources = build_system_prompt(chunks)
+        print(f"[CHAT] ready paper_ids for project={body.project_id}: {paper_ids}", flush=True)
+        logger.info(
+            "[CHAT] project_id=%s user=%s ready_paper_ids=%s",
+            body.project_id, user_id, paper_ids,
+        )
+        if paper_ids:
+            chunks = retrieve_chunks(
+                user_id,
+                body.message,
+                n_results=25,
+                paper_ids=paper_ids,
+                project_id=body.project_id,
+            )
+            if not chunks:
+                # paper_ids were found in Supabase (status=ready) but ChromaDB
+                # returned nothing — most likely the vector store was reset.
+                # Fall back to a global search so the user isn't left with silence.
+                logger.warning(
+                    "[CHAT] project_id=%s: paper_ids non-empty but ChromaDB returned 0 chunks "
+                    "— falling back to global retrieval",
+                    body.project_id,
+                )
+                print(f"[CHAT] fallback: global retrieval", flush=True)
+                chunks = retrieve_chunks(user_id, body.message, n_results=15)
+        # else: project has no ready papers yet — chunks stays [], prompt will say so
+    else:
+        chunks = retrieve_chunks(user_id, body.message, n_results=15)
+
+    print(f"[CHAT] total chunks retrieved: {len(chunks)}", flush=True)
+    system_prompt, sources = build_system_prompt(chunks, project_scoped=project_scoped)
 
     # ── Build message list with conversation history ───────────────────────────
     history: list[dict] = []
@@ -149,6 +188,7 @@ async def chat_stream(
         try:
             if not conversation_id:
                 title = body.message[:80].strip()
+                logger.info("project_id on conversation create: %s", body.project_id)
                 conversation_id = create_conversation(
                     user_id, title, project_id=body.project_id
                 )

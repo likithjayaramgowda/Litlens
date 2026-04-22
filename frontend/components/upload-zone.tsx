@@ -20,6 +20,7 @@ import {
   Zap,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { toast } from "@/components/toast";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -176,9 +177,11 @@ function PaperCard({
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
+      toast.success(`"${paper.title || paper.filename}" removed`);
       onDelete(paper.id);
     } catch {
       setDeleting(false);
+      toast.error("Failed to delete paper");
     }
   }
 
@@ -432,13 +435,12 @@ export default function UploadZone({ projectId }: { projectId?: string }) {
         }
         const created = await xhrUpload(file, entry.id, tok);
         patchEntry(entry.id, { status: "done", progress: 100 });
-        // Prepend new papers; they start as 'uploaded' and polling will update them.
+        toast.success(`"${file.name}" uploaded successfully`);
         setPapers((prev) => [...created, ...prev]);
       } catch (err) {
-        patchEntry(entry.id, {
-          status: "error",
-          errorMsg: (err as Error).message,
-        });
+        const msg = (err as Error).message;
+        patchEntry(entry.id, { status: "error", errorMsg: msg });
+        toast.error(`Upload failed: ${msg}`);
       }
     }
 

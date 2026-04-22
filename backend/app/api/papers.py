@@ -11,6 +11,7 @@ embedding pipeline asynchronously, updating the paper status from
 """
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 
 import fitz  # PyMuPDF
@@ -29,6 +30,13 @@ router = APIRouter(prefix="/papers", tags=["papers"])
 
 _MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB per file
 _PDF_MAGIC = b"%PDF"
+_UNSAFE_FILENAME_CHARS = re.compile(r'[/\\:\*\?"<>|\x00-\x1f]')
+
+
+def _sanitize_filename(name: str) -> str:
+    """Strip path separators, null bytes, and shell-unsafe characters."""
+    name = _UNSAFE_FILENAME_CHARS.sub("", name)
+    return name.strip()[:255] or "upload.pdf"
 
 
 # ── Supabase service-role client ──────────────────────────────────────────────
@@ -95,7 +103,7 @@ async def upload_papers(
     results: list[PaperOut] = []
 
     for upload in files:
-        fname = upload.filename or "upload.pdf"
+        fname = _sanitize_filename(upload.filename or "upload.pdf")
 
         # ── 1. Validate ───────────────────────────────────────────────────────
         content_type = upload.content_type or ""
@@ -106,6 +114,12 @@ async def upload_papers(
             )
 
         raw = await upload.read()
+
+        if len(raw) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"'{fname}': file is empty.",
+            )
 
         if len(raw) > _MAX_FILE_BYTES:
             raise HTTPException(
@@ -248,6 +262,7 @@ async def list_papers(
                 user_id=user_id,
                 paper_title=paper.title,
                 storage_path=row["storage_path"],
+                project_id=row.get("project_id"),
             )
 
         papers.append(paper)

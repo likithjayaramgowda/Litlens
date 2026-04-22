@@ -103,15 +103,57 @@ async def suggest_citations(
     if not paragraph.strip():
         return []
 
+    logger.info("[CITATIONS] suggest paragraph=%r (len=%d)", paragraph[:120], len(paragraph))
+
     chunks = retrieve_chunks(
         user_id,
         paragraph,
-        n_results=8,
+        n_results=12,
         paper_ids=paper_ids or None,
     )
 
     if not chunks:
+        logger.info("[CITATIONS] no chunks retrieved for user=%s project=%s", user_id, project_id)
         return []
+
+    # Log retrieval results for debugging
+    for c in chunks[:5]:
+        logger.info(
+            "[CITATIONS] chunk score=%.3f paper=%r page=%d text=%r",
+            c["relevance_score"], c["paper_title"], c["page_number"], c["text"][:80],
+        )
+
+    # Fast-path: skip LLM entirely when any chunk is very highly similar.
+    _FAST_PATH_SIM = 0.82
+    fast_path_chunks = [c for c in chunks if c["relevance_score"] >= _FAST_PATH_SIM]
+    if fast_path_chunks:
+        logger.info(
+            "[CITATIONS] fast-path triggered (%d chunks >= %.2f) — skipping LLM",
+            len(fast_path_chunks), _FAST_PATH_SIM,
+        )
+        seen_fp: set[str] = set()
+        fast_suggestions: list[dict] = []
+        for c in fast_path_chunks:
+            if c["paper_id"] in seen_fp or len(fast_suggestions) >= 3:
+                break
+            seen_fp.add(c["paper_id"])
+            fast_suggestions.append({
+                "paper_id": c["paper_id"],
+                "paper_title": c["paper_title"],
+                "page_number": c["page_number"],
+                "confidence": "strong",
+                "reason": "This text closely matches content from this paper.",
+                "excerpt": c["text"][:300],
+                "needs_citation": True,
+            })
+        return fast_suggestions
+
+    # Chunks above this threshold are considered highly relevant — we will
+    # always suggest them regardless of the LLM's needs_citation decision.
+    _HIGH_SIM = 0.65
+    _MOD_SIM  = 0.45
+    high_sim_chunks = [c for c in chunks if c["relevance_score"] >= _HIGH_SIM]
+    mod_sim_chunks  = [c for c in chunks if _MOD_SIM <= c["relevance_score"] < _HIGH_SIM]
 
     # Build a compact context block (paper title, page, excerpt)
     context_lines: list[str] = []
@@ -124,25 +166,31 @@ async def suggest_citations(
         excerpt = c["text"][:250].replace("\n", " ")
         context_lines.append(
             f'- paper_id="{c["paper_id"]}" | title="{c["paper_title"]}" '
-            f'| page={c["page_number"]} | excerpt: "{excerpt}"'
+            f'| page={c["page_number"]} | score={c["relevance_score"]:.2f} | excerpt: "{excerpt}"'
         )
 
     context_block = "\n".join(context_lines)
 
-    prompt = f"""You are a citation assistant for academic writing.
+    prompt = f"""You are a citation assistant for academic writing. Your job is to identify which papers support the given text.
 
-TASK: Analyse whether the text below needs a citation and which papers best support it.
+TASK: Determine which papers from the library best support or relate to the text below.
 
 TEXT TO ANALYSE:
 {paragraph}
 
-AVAILABLE PAPER EXCERPTS (from the user's library):
+AVAILABLE PAPER EXCERPTS (from the user's library, with similarity scores):
 {context_block}
+
+IMPORTANT RULES:
+- "needs_citation" is true for ANY text containing factual claims, data, results, system names, or content that appears sourced. When in doubt return true. Never return empty suggestions if any excerpt shows textual overlap.
+- If ANY paper excerpt overlaps with, paraphrases, or is the original source for the text, it MUST be suggested.
+- "confidence" must be exactly one of: "strong" (score>0.70), "moderate" (score 0.45-0.70), "weak" (score<0.45).
+- Return at most 4 suggestions, best first by score.
 
 Respond with ONLY valid JSON — no explanations, no markdown fences:
 {{
   "needs_citation": true,
-  "reason": "one sentence explaining why a citation is (or is not) needed",
+  "reason": "one sentence explaining why a citation is needed",
   "suggestions": [
     {{
       "paper_id": "exact paper_id from above",
@@ -152,44 +200,68 @@ Respond with ONLY valid JSON — no explanations, no markdown fences:
       "reason": "one sentence why this paper supports the text"
     }}
   ]
-}}
-
-Rules:
-- "needs_citation" is true if the text makes a factual claim, statistic, or theory.
-- "confidence" must be exactly one of: "strong", "moderate", "weak".
-- Only include suggestions where there is genuine textual support in the excerpts.
-- Return at most 4 suggestions, best first.
-- If no paper supports the text, return suggestions as an empty array."""
+}}"""
 
     result = await _llm_json(prompt, max_tokens=800)
+    logger.info("[CITATIONS] LLM result: needs_citation=%s suggestions=%d",
+                result.get("needs_citation") if isinstance(result, dict) else "?",
+                len(result.get("suggestions", [])) if isinstance(result, dict) else 0)
 
-    # Validate and normalise
+    # Validate and normalise LLM suggestions
     suggestions: list[dict] = []
+    seen_paper_ids: set[str] = set()
+
     if isinstance(result, dict):
         raw_suggestions = result.get("suggestions", [])
         if isinstance(raw_suggestions, list):
             for s in raw_suggestions:
                 if not isinstance(s, dict):
                     continue
-                # Find the matching chunk for the excerpt
                 matched_chunk = next(
                     (c for c in chunks if c["paper_id"] == s.get("paper_id")), None
                 )
+                pid = s.get("paper_id", "")
+                if pid:
+                    seen_paper_ids.add(pid)
                 suggestions.append({
-                    "paper_id": s.get("paper_id", ""),
+                    "paper_id": pid,
                     "paper_title": s.get("paper_title", "Unknown"),
-                    "page_number": int(s.get("page_number", 1)),
+                    "page_number": int(s.get("page_number") or 1),
                     "confidence": s.get("confidence", "moderate")
                         if s.get("confidence") in ("strong", "moderate", "weak")
                         else "moderate",
                     "reason": s.get("reason", ""),
                     "excerpt": matched_chunk["text"][:300] if matched_chunk else "",
-                    "needs_citation": bool(result.get("needs_citation", True)),
+                    "needs_citation": True,
                 })
 
+    # --- Similarity-threshold override ---
+    # If the LLM returned no suggestions but we have high-similarity chunks,
+    # build suggestions directly from them. This handles the case where the LLM
+    # incorrectly decides "no citation needed" for text pasted directly from a paper.
+    fallback_chunks = high_sim_chunks or (mod_sim_chunks if not suggestions else [])
+    for c in fallback_chunks:
+        if c["paper_id"] in seen_paper_ids:
+            continue  # already covered by LLM
+        if len(suggestions) >= 4:
+            break
+        score = c["relevance_score"]
+        confidence = "strong" if score >= 0.80 else ("moderate" if score >= 0.65 else "weak")
+        suggestions.append({
+            "paper_id": c["paper_id"],
+            "paper_title": c["paper_title"],
+            "page_number": c["page_number"],
+            "confidence": confidence,
+            "reason": f"This text closely matches content from this paper (similarity {score:.0%}).",
+            "excerpt": c["text"][:300],
+            "needs_citation": True,
+        })
+        seen_paper_ids.add(c["paper_id"])
+
     logger.info(
-        "[CITATIONS] suggest user=%s project=%s → %d suggestions",
-        user_id, project_id, len(suggestions),
+        "[CITATIONS] suggest user=%s project=%s → %d suggestions (high_sim=%d, llm=%d)",
+        user_id, project_id, len(suggestions), len(high_sim_chunks),
+        len(result.get("suggestions", [])) if isinstance(result, dict) else 0,
     )
     return suggestions
 

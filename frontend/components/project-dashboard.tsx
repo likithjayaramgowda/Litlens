@@ -5,12 +5,14 @@ import {
   ArrowLeft,
   BookOpen,
   Clock,
+  Columns,
   FileText,
   FolderOpen,
   Layers,
   Loader2,
   MessageSquare,
   MoreHorizontal,
+  Network,
   PenLine,
   Plus,
   Trash2,
@@ -18,8 +20,13 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { toast } from "@/components/toast";
 import UploadZone from "@/components/upload-zone";
 import WritingEditor from "@/components/writing-editor";
+import KnowledgeGraph from "@/components/knowledge-graph";
+import ComparisonTable from "@/components/comparison-table";
+import PaperTimeline from "@/components/paper-timeline";
+import ThemeClusters from "@/components/theme-clusters";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -119,7 +126,9 @@ function CreateProjectModal({
         body: JSON.stringify({ name: name.trim(), description: description.trim() || null }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? "Failed");
-      onCreate(await r.json());
+      const created = await r.json();
+      toast.success(`Project "${created.name}" created`);
+      onCreate(created);
       onClose();
     } catch (err) {
       setError((err as Error).message);
@@ -394,7 +403,7 @@ function ConversationCard({
 
 // ── Project view (papers + chats + write tabs) ────────────────────────────────
 
-type ProjectTab = "papers" | "chats" | "write";
+type ProjectTab = "papers" | "chats" | "write" | "graph" | "compare" | "timeline" | "clusters";
 
 function ProjectView({
   project,
@@ -437,9 +446,13 @@ function ProjectView({
   }
 
   const tabs: { id: ProjectTab; label: string; icon: React.ReactNode }[] = [
-    { id: "papers", label: "Papers", icon: <BookOpen className="h-4 w-4" /> },
-    { id: "chats",  label: "Chats",  icon: <MessageSquare className="h-4 w-4" /> },
-    { id: "write",  label: "Write",  icon: <PenLine className="h-4 w-4" /> },
+    { id: "papers",  label: "Papers",  icon: <BookOpen className="h-4 w-4" /> },
+    { id: "chats",   label: "Chats",   icon: <MessageSquare className="h-4 w-4" /> },
+    { id: "write",   label: "Write",   icon: <PenLine className="h-4 w-4" /> },
+    { id: "graph",    label: "Graph",    icon: <Network className="h-4 w-4" /> },
+    { id: "compare",  label: "Compare",  icon: <Columns className="h-4 w-4" /> },
+    { id: "timeline",  label: "Timeline",  icon: <Clock className="h-4 w-4" /> },
+    { id: "clusters",  label: "Clusters",  icon: <Layers className="h-4 w-4" /> },
   ];
 
   return (
@@ -559,6 +572,34 @@ function ProjectView({
           <WritingEditor projectId={project.id} />
         </section>
       )}
+
+      {/* ── Graph tab ──────────────────────────────────────────────────────── */}
+      {activeTab === "graph" && (
+        <section>
+          <KnowledgeGraph projectId={project.id} />
+        </section>
+      )}
+
+      {/* ── Compare tab ────────────────────────────────────────────────────── */}
+      {activeTab === "compare" && (
+        <section>
+          <ComparisonTable projectId={project.id} />
+        </section>
+      )}
+
+      {/* ── Timeline tab ───────────────────────────────────────────────────── */}
+      {activeTab === "timeline" && (
+        <section>
+          <PaperTimeline projectId={project.id} />
+        </section>
+      )}
+
+      {/* ── Clusters tab ───────────────────────────────────────────────────── */}
+      {activeTab === "clusters" && (
+        <section>
+          <ThemeClusters projectId={project.id} paperCount={project.paper_count} />
+        </section>
+      )}
     </div>
   );
 }
@@ -613,6 +654,7 @@ export default function ProjectDashboard() {
   // ── Delete project ─────────────────────────────────────────────────────────
 
   const handleDeleteProject = useCallback(async (projectId: string) => {
+    const name = projects.find((p) => p.id === projectId)?.name ?? "Project";
     try {
       const token = await getToken();
       const r = await fetch(`${API_URL}/api/v1/projects/${projectId}`, {
@@ -622,9 +664,12 @@ export default function ProjectDashboard() {
       if (r.ok || r.status === 204) {
         setProjects((prev) => prev.filter((p) => p.id !== projectId));
         if (activeProjectId === projectId) clearProject();
+        toast.success(`"${name}" deleted`);
+      } else {
+        toast.error("Failed to delete project");
       }
-    } catch { /* non-critical */ }
-  }, [getToken, activeProjectId]);
+    } catch { toast.error("Failed to delete project"); }
+  }, [getToken, activeProjectId, projects]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -692,8 +737,18 @@ export default function ProjectDashboard() {
         </div>
 
         {loadingProjects ? (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 className="h-6 w-6 animate-spin text-slate-600" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="animate-pulse rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+                <div className="h-1.5 w-full bg-slate-800" />
+                <div className="p-5 space-y-3">
+                  <div className="h-10 w-10 rounded-xl bg-slate-800" />
+                  <div className="h-4 w-3/4 rounded bg-slate-800" />
+                  <div className="h-3 w-full rounded bg-slate-800/70" />
+                  <div className="h-3 w-1/2 rounded bg-slate-800/50" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <>

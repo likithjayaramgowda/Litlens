@@ -43,7 +43,7 @@ def process_paper(
     logger.info("START process_paper — paper_id=%s", paper_id)
 
     _set_status(sb, paper_id, "processing")
-    print(f"[PIPELINE] status → processing", flush=True)
+    print(f"[PIPELINE] status -> processing", flush=True)
 
     try:
         # ── Step 1: PDF text extraction ───────────────────────────────────────
@@ -64,9 +64,13 @@ def process_paper(
             project_id=project_id,
         )
         print(f"[PIPELINE] embed_paper done — {chunk_count} chunks stored.", flush=True)
+        logger.info(
+            "[CHROMA] upsert complete — collection=user_%s paper_id=%s chunks=%d",
+            user_id, paper_id, chunk_count,
+        )
 
         _set_status(sb, paper_id, "ready")
-        print(f"[PIPELINE] status → ready", flush=True)
+        print(f"[PIPELINE] status -> ready", flush=True)
         logger.info("Paper %s processing complete (%d chunks).", paper_id, chunk_count)
 
     except Exception as exc:

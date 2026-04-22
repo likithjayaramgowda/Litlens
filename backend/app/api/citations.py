@@ -26,7 +26,9 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.core.rate_limit import rate_limit_check
 
 from app.core.auth import get_current_user
 from app.services.citation_service import (
@@ -45,20 +47,20 @@ logger = logging.getLogger(__name__)
 # ── Request / response models ──────────────────────────────────────────────────
 
 class SuggestRequest(BaseModel):
-    paragraph: str
+    paragraph: str = Field(..., max_length=10_000)
     project_id: str | None = None
     citation_style: str = "APA"
 
 
 class VerifyRequest(BaseModel):
-    text: str
+    text: str = Field(..., max_length=50_000)
     project_id: str | None = None
     citation_style: str = "APA"
 
 
 class SaveDraftRequest(BaseModel):
-    title: str = "Untitled Draft"
-    content: str
+    title: str = Field("Untitled Draft", max_length=500)
+    content: str = Field(..., max_length=100_000)
     citation_style: str = "APA"
 
 
@@ -95,6 +97,11 @@ async def suggest_endpoint(
     and whether a citation is needed.
     """
     user_id: str = user["sub"]
+    if not rate_limit_check(user_id, "citations_suggest", max_calls=20, window_secs=60):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please wait a moment.",
+        )
 
     paper_ids: list[str] | None = None
     if body.project_id:
