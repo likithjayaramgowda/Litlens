@@ -66,10 +66,10 @@ function NodePanel({ node, onClose }: { node: FgNode; onClose: () => void }) {
         {isPaper ? String(m.title || node.label) : node.label}
       </p>
 
-      {isPaper && m.authors && (
+      {isPaper && !!m.authors && (
         <p className="text-xs text-slate-400 leading-relaxed">{String(m.authors)}</p>
       )}
-      {isPaper && m.year && (
+      {isPaper && !!m.year && (
         <p className="text-xs text-slate-500">{String(m.year)}</p>
       )}
 
