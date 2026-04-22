@@ -3,8 +3,7 @@
 import { useCallback, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Layers, Loader2, RefreshCw, Sparkles } from "lucide-react";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

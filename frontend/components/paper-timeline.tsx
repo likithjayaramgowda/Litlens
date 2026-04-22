@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { BookOpen, Calendar, FileText, Loader2, RefreshCw, X } from "lucide-react";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 // Layout constants
 const ABOVE_H = 280;   // px — fixed height for above-axis card area

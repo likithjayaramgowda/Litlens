@@ -13,10 +13,10 @@ import {
   XCircle,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { API_URL } from "@/lib/api";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const STORAGE_KEY = "litlens_llm_settings";
 
 // ── BYOK settings shape ───────────────────────────────────────────────────────

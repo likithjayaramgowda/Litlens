@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 // Canvas-based graph — must be client-only (no SSR)
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 const GRAPH_HEIGHT = 580;
 const PANEL_WIDTH = 280;
 

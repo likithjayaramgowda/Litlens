@@ -21,8 +21,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { loadLLMSettings } from "@/components/settings-modal";
 import { toast } from "@/components/toast";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 // ── Keyframe animations ───────────────────────────────────────────────────────
 

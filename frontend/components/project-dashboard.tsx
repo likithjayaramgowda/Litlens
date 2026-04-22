@@ -27,8 +27,7 @@ import KnowledgeGraph from "@/components/knowledge-graph";
 import ComparisonTable from "@/components/comparison-table";
 import PaperTimeline from "@/components/paper-timeline";
 import ThemeClusters from "@/components/theme-clusters";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

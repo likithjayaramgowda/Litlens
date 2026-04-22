@@ -21,10 +21,10 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "@/components/toast";
+import { API_URL } from "@/lib/api";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
 const POLL_INTERVAL_MS = 3_000;          // poll every 3 s while any paper is processing
 
