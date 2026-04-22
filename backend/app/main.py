@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 # Quiet down noisy third-party libraries.
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
-logging.getLogger("chromadb").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -42,11 +42,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 
@@ -123,7 +122,7 @@ async def reprocess_all(
 ) -> dict:
     """
     Debug endpoint — reprocesses every paper in Supabase through the full
-    chunk → embed → ChromaDB upsert pipeline.  No auth required.
+    chunk → embed → pgvector upsert pipeline.
     Returns {"processed": N, "errors": [{"paper_id": ..., "error": ...}]}.
     """
     import asyncio
@@ -171,21 +170,16 @@ async def reprocess_all(
     return {"processed": processed, "errors": errors}
 
 
-@app.get("/api/v1/debug/chroma-status")
-async def chroma_status(
+@app.get("/api/v1/debug/pgvector-status")
+async def pgvector_status(
     _: Annotated[dict, Depends(get_current_user)],
 ) -> dict:
-    """Debug endpoint — lists all ChromaDB collections and their document counts."""
+    """Debug endpoint — returns total chunk count in the paper_chunks pgvector table."""
     try:
-        from app.core.chroma import get_chroma
-        chroma = get_chroma()
-        col_names = chroma.list_collections()  # 0.6.x returns strings
-        return {
-            "collections": [
-                {"name": name, "count": chroma.get_collection(name).count()}
-                for name in col_names
-            ]
-        }
-    except Exception as e:
-        logger.error("chroma-status failed: %s", e)
-        return {"error": str(e)}
+        from supabase import create_client
+        sb = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        result = sb.table("paper_chunks").select("id", count="exact").execute()
+        return {"table": "paper_chunks", "total_chunks": result.count}
+    except Exception as exc:
+        logger.error("pgvector-status failed: %s", exc)
+        return {"error": str(exc)}
