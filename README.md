@@ -25,7 +25,7 @@ AI-powered research assistant for academic papers. Upload PDFs, ask questions ac
 ```
 Browser
   │
-  ├── Next.js 14 (Vercel)          ← frontend/
+  ├── Next.js 14 (Netlify)         ← frontend/
   │     App Router, TypeScript, Tailwind, shadcn/ui
   │
   └── FastAPI (Render)             ← backend/
@@ -131,18 +131,18 @@ This starts backend (port 8000) and frontend (port 3000). ChromaDB data is persi
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API |
 | `SUPABASE_JWT_SECRET` | Supabase → Project Settings → API (leave blank for ES256 projects) |
 | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| `CORS_ORIGINS` | `["https://your-app.vercel.app"]` (JSON array string) |
+| `CORS_ORIGINS` | `["https://your-app.netlify.app"]` (JSON array string) |
 
-### Frontend → Vercel
+### Frontend → Netlify
 
-```bash
-cd frontend
-vercel --prod
-```
+1. Netlify dashboard → **Add new site** → **Import an existing project** → connect your repo.
+2. Set **Base directory**: `frontend`, **Build command**: `npm run build`, **Publish directory**: `frontend/.next`.
+3. Add environment variables (see table below).
+4. Click **Deploy site**.
 
-Or connect the repo in the Vercel dashboard and set the **Root Directory** to `frontend`.
+> Enable the **Next.js Runtime** plugin (Netlify adds it automatically when it detects Next.js) so App Router and server components work correctly.
 
-**Required env vars on Vercel:**
+**Required env vars on Netlify:**
 
 | Variable | Value |
 |---|---|

@@ -1,5 +1,5 @@
 # Render Blueprint — deploys the LitLens backend as a Docker web service.
-# Frontend is deployed separately on Vercel (see README).
+# Frontend is deployed separately on Netlify (see README).
 #
 # Usage:
 #   1. Push this repo to GitHub.
@@ -37,8 +37,8 @@ services:
       - key: DEMO_QUERY_LIMIT
         value: "10"
 
-      # CORS — set to your Vercel frontend URL
-      # e.g. '["https://litlens.vercel.app"]'
+      # CORS — set to your Netlify frontend URL
+      # e.g. '["https://litlens.netlify.app"]'
       - key: CORS_ORIGINS
         sync: false
 
