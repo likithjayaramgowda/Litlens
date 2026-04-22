@@ -26,7 +26,11 @@ class Settings(BaseSettings):
     # ES256/RS256 projects verify via JWKS; this field can be left empty for those.
     SUPABASE_JWT_SECRET: str = ""
 
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "https://glistening-unicorn-969c75.netlify.app",
+    ]
 
     # ── OpenRouter (server-side, never exposed to users) ─────────────────────
     # One key gives access to 28+ free models. Get yours at openrouter.ai/keys.
