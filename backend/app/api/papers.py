@@ -28,7 +28,7 @@ from app.services.embedding_service import delete_paper_chunks
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
-_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB per file
+_MAX_FILE_BYTES = 100 * 1024 * 1024  # 100 MB per file
 _PDF_MAGIC = b"%PDF"
 _UNSAFE_FILENAME_CHARS = re.compile(r'[/\\:\*\?"<>|\x00-\x1f]')
 
@@ -124,7 +124,7 @@ async def upload_papers(
         if len(raw) > _MAX_FILE_BYTES:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"'{fname}': file exceeds the 50 MB limit ({len(raw) // 1_048_576} MB).",
+                detail=f"'{fname}': file exceeds the 100 MB limit ({len(raw) // 1_048_576} MB).",
             )
 
         if not raw.startswith(_PDF_MAGIC):
