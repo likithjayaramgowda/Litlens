@@ -40,15 +40,7 @@ app = FastAPI(
     description="Backend API for LitLens — intelligent document search and analysis.",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
+# Security headers — added first so it ends up innermost (CORS wraps it).
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -57,6 +49,18 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
+
+
+# CORS — added last so it ends up outermost (handles preflight before anything else).
+# In Starlette, add_middleware inserts at index 0 and the stack is built in reverse,
+# so the last call here becomes the first middleware to see every request.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(Exception)
