@@ -45,6 +45,27 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+# Safety-net: manually stamp CORS headers on every response so they are
+# present even when CORSMiddleware's own logic is bypassed by an early
+# exception or a quirk in Starlette's middleware-stack ordering.
+@app.middleware("http")
+async def _cors_safety_net(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            content={},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(router, prefix="/api/v1")
 app.include_router(papers_router, prefix="/api/v1")
