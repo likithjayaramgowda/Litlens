@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.auth import get_current_user
-
 from app.api.routes import router
 from app.api.papers import router as papers_router
 from app.api.llm import router as llm_router
@@ -19,15 +18,10 @@ from app.api.timeline import router as timeline_router
 from app.api.themes import router as themes_router
 from app.core.config import settings
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
-# Uvicorn configures its own loggers but does NOT add handlers to the root
-# logger or to app.* loggers. Wire them up explicitly so all logger.info/error
-# calls from app.services.* are visible in the terminal.
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s:     %(name)s — %(message)s",
 )
-# Quiet down noisy third-party libraries.
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -40,46 +34,18 @@ app = FastAPI(
     description="Backend API for LitLens — intelligent document search and analysis.",
 )
 
-# Security headers — added first so it ends up innermost (CORS wraps it).
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    return response
-
-
-# CORS — added last so it ends up outermost (handles preflight before anything else).
-# In Starlette, add_middleware inserts at index 0 and the stack is built in reverse,
-# so the last call here becomes the first middleware to see every request.
+# CORS must be the first middleware registered so it is outermost in the stack
+# and handles preflight OPTIONS requests before anything else touches them.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
-
-@app.exception_handler(Exception)
-async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """
-    Catch-all for any exception that escapes route handlers.
-
-    Registering this handler with FastAPI means it runs inside ExceptionMiddleware,
-    which is wrapped by CORSMiddleware — so CORS headers ARE present on the response.
-    Without this, unhandled exceptions bubble up to Starlette's ServerErrorMiddleware
-    (outside CORSMiddleware) and the browser sees a CORS error on top of the 500.
-    """
-    logger.exception("Unhandled exception: %s %s", request.method, request.url.path)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error."},
-    )
-
-
+# ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(router, prefix="/api/v1")
 app.include_router(papers_router, prefix="/api/v1")
 app.include_router(llm_router, prefix="/api/v1")
@@ -90,6 +56,15 @@ app.include_router(graph_router, prefix="/api/v1")
 app.include_router(compare_router, prefix="/api/v1")
 app.include_router(timeline_router, prefix="/api/v1")
 app.include_router(themes_router, prefix="/api/v1")
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled exception: %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error."},
+    )
 
 
 @app.get("/health")
@@ -127,7 +102,6 @@ async def reprocess_all(
     """
     Debug endpoint — reprocesses every paper in Supabase through the full
     chunk → embed → pgvector upsert pipeline.
-    Returns {"processed": N, "errors": [{"paper_id": ..., "error": ...}]}.
     """
     import asyncio
     from supabase import create_client
@@ -136,7 +110,6 @@ async def reprocess_all(
     if not settings.SUPABASE_SERVICE_ROLE_KEY:
         return {"error": "SUPABASE_SERVICE_ROLE_KEY not configured", "processed": 0, "errors": []}
 
-    # ── Fetch paper list ──────────────────────────────────────────────────────
     try:
         sb = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
         result = sb.table("papers").select("id, user_id, title, storage_path, project_id").execute()
@@ -149,7 +122,6 @@ async def reprocess_all(
     processed = 0
     errors: list[dict] = []
 
-    # ── Process each paper independently ─────────────────────────────────────
     for paper in papers:
         paper_id = paper.get("id", "unknown")
         logger.info("[REPROCESS-ALL] Starting paper_id=%s title=%r storage_path=%r",
