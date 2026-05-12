@@ -25,7 +25,7 @@ import { API_URL } from "@/lib/api";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB
 const POLL_INTERVAL_MS = 3_000;          // poll every 3 s while any paper is processing
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -557,7 +557,7 @@ export default function UploadZone({ projectId }: { projectId?: string }) {
             {isDragging ? "Drop PDFs here" : "Drop PDFs here or click to browse"}
           </p>
           <p className="mt-1 text-sm text-slate-500">
-            PDF only · up to 50 MB per file · multiple files supported
+            PDF only · up to 100 MB per file · multiple files supported
           </p>
         </div>
       </div>

@@ -103,7 +103,7 @@
 - ✅ Input validation — Pydantic `Field(max_length=...)` on all request models: chat message 10 000 chars, project name 100 chars, project description 500 chars, citation paragraph 10 000 chars, draft content 100 000 chars
 - ✅ Error handling — global `@app.exception_handler(Exception)` returns generic 500 JSON; no tracebacks exposed to client; full traceback logged server-side via `logger.exception`
 - ✅ Rate limiting — in-memory sliding-window counter (`backend/app/core/rate_limit.py`): chat 30/min, compare 10/min, themes 10/min, citations/suggest 20/min; returns HTTP 429 with friendly message
-- ✅ File upload security — magic-byte PDF check (`%PDF`); 50 MB server-side limit; 0-byte file rejection; filename sanitized with regex stripping path separators, null bytes, and shell-unsafe characters
+- ✅ File upload security — magic-byte PDF check (`%PDF`); 100 MB server-side limit; 0-byte file rejection; filename sanitized with regex stripping path separators, null bytes, and shell-unsafe characters
 - ✅ Frontend security — removed `console.log("sending project_id:", projectId)` from `chat-interface.tsx`; auth token sent via `Authorization` header only (never URL params); no API keys logged
 
 ### Phase 8: Deployment
@@ -922,7 +922,7 @@ End-to-end integration revealed a series of issues after Phase 2.1 code was writ
   - `upload_pdf(client, user_id, filename, file_bytes)` — uploads to `papers` bucket at `{user_id}/{uuid}_{filename}`, returns storage path.
   - `delete_pdf(client, storage_path)` — removes from storage.
 - Created `backend/app/api/papers.py` with three endpoints:
-  - `POST /api/v1/papers/upload` — validates MIME type + PDF magic bytes + 50 MB limit, parses metadata with PyMuPDF, uploads raw bytes to Supabase Storage, inserts row into `papers` table. Returns `list[PaperOut]`.
+  - `POST /api/v1/papers/upload` — validates MIME type + PDF magic bytes + 100 MB limit, parses metadata with PyMuPDF, uploads raw bytes to Supabase Storage, inserts row into `papers` table. Returns `list[PaperOut]`.
   - `GET /api/v1/papers/` — lists all papers for the authenticated user, newest first.
   - `DELETE /api/v1/papers/{id}` — verifies ownership, deletes from storage (best-effort) and DB.
 - Updated `backend/app/main.py` to register the papers router at `/api/v1`.
@@ -931,7 +931,7 @@ End-to-end integration revealed a series of issues after Phase 2.1 code was writ
 - Created `frontend/components/upload-zone.tsx` (Client Component):
   - Drag-and-drop zone with `onDragOver`/`onDrop` native events; also supports click-to-browse.
   - Visual state: default (dashed border) → drag-over (violet glow + lighter bg).
-  - Files validated client-side: `.pdf` extension + 50 MB limit.
+  - Files validated client-side: `.pdf` extension + 100 MB limit.
   - Per-file upload via `XMLHttpRequest` (not `fetch`) to capture `upload.onprogress` events.
   - Upload queue UI: shows each file with name, animated progress bar (violet fill), status icon (queued/uploading/done/error).
   - Files uploaded sequentially to avoid overwhelming the backend.
@@ -1349,7 +1349,7 @@ cd backend  && pip install -r requirements.txt && uvicorn app.main:app --reload
 
 ### Input Validation & Sanitization
 - ⬜ PDF upload: strict MIME type check + magic bytes validation (`%PDF-`) enforced server-side (not just extension or Content-Type header)
-- ⬜ PDF upload: 50 MB max size enforced server-side — cannot be bypassed by spoofing Content-Length
+- ⬜ PDF upload: 100 MB max size enforced server-side — cannot be bypassed by spoofing Content-Length
 - ⬜ Reject uploads with malicious filenames — path traversal (`../`, absolute paths) must be stripped or rejected
 - ⬜ Chat messages sent to the LLM must be sanitized to prevent prompt injection (strip or escape instruction-override patterns)
 - ⬜ All user input rendered in the UI must pass through a safe markdown renderer (`react-markdown` + `rehype-sanitize`) to prevent XSS
@@ -1416,7 +1416,7 @@ cd backend  && pip install -r requirements.txt && uvicorn app.main:app --reload
 - ⬜ Write integration tests for critical paths: signup → upload → chat → source citation
 - ⬜ Manual penetration testing: attempt SQL injection, XSS, CSRF, IDOR on every API endpoint
 - ⬜ Test with invalid/malformed JWTs, expired tokens, tokens signed with a different secret
-- ⬜ Test file upload edge cases: files > 50 MB, non-PDF files renamed to `.pdf`, PDFs with embedded JS, zero-byte files
+- ⬜ Test file upload edge cases: files > 100 MB, non-PDF files renamed to `.pdf`, PDFs with embedded JS, zero-byte files
 
 ### Final Pre-Deployment
 - ⬜ Remove or convert all `TODO` / `FIXME` comments — create GitHub issues for anything deferred

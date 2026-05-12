@@ -9,21 +9,19 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import chromadb
-from chromadb.api import ClientAPI
-
 logger = logging.getLogger(__name__)
 
 # Resolves to backend/chroma_db/ regardless of where Python is invoked from.
 _CHROMA_PATH = str(Path(__file__).resolve().parent.parent.parent / "chroma_db")
 
-_chroma: ClientAPI | None = None
+_chroma = None
 
 
-def get_chroma() -> ClientAPI:
+def get_chroma():
     """Return the shared ChromaDB PersistentClient singleton."""
     global _chroma
     if _chroma is None:
+        import chromadb  # lazy — keeps startup fast
         print(f"[CHROMA] Opening PersistentClient at {_CHROMA_PATH}…", flush=True)
         logger.info("Opening ChromaDB PersistentClient at %s", _CHROMA_PATH)
         _chroma = chromadb.PersistentClient(path=_CHROMA_PATH)
