@@ -16,6 +16,7 @@ from typing import Annotated, Any
 
 import fitz  # PyMuPDF
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from supabase import create_client, Client
 
@@ -372,5 +373,10 @@ async def delete_paper(
     except Exception:
         pass
 
-    sb.table("papers").delete().eq("id", paper_id).execute()
+    try:
+        sb.table("papers").delete().eq("id", paper_id).execute()
+    except Exception as e:
+        print(f"DELETE paper error: {e}", flush=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

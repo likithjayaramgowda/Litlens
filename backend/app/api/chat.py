@@ -23,6 +23,7 @@ JSON types:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Annotated, AsyncIterator
@@ -200,7 +201,9 @@ async def chat_stream(
         # Send sources as the first event so the UI can show them immediately
         yield _sse({"type": "sources", "sources": sources})
 
-        # Stream tokens
+        # Stream tokens — queue-based so we can emit keepalives every 5 s
+        # to prevent Render from killing the idle connection before the first
+        # token arrives (free-tier models can have 10-30 s to first token).
         full_response: list[str] = []
         try:
             if use_byok:
@@ -218,9 +221,38 @@ async def chat_stream(
                     tier=body.tier,
                 )
 
-            async for token in gen:
-                full_response.append(token)
-                yield _sse({"type": "token", "content": token})
+            token_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+
+            async def _fill() -> None:
+                try:
+                    async for tok in gen:
+                        await token_queue.put(("token", tok))
+                except Exception as exc:
+                    await token_queue.put(("error", str(exc)))
+                finally:
+                    await token_queue.put(("done", ""))
+
+            filler = asyncio.create_task(_fill())
+            try:
+                while True:
+                    try:
+                        kind, value = await asyncio.wait_for(
+                            token_queue.get(), timeout=5.0
+                        )
+                    except asyncio.TimeoutError:
+                        yield "data: [KEEPALIVE]\n\n"
+                        continue
+                    if kind == "token":
+                        full_response.append(value)
+                        yield _sse({"type": "token", "content": value})
+                    elif kind == "error":
+                        logger.error("LLM streaming error (queue): %s", value)
+                        yield _sse({"type": "error", "message": value})
+                        return
+                    else:  # "done"
+                        break
+            finally:
+                filler.cancel()
 
         except Exception as exc:
             logger.error("LLM streaming error: %s", exc)

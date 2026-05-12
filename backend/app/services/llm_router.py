@@ -111,6 +111,7 @@ async def _stream_openai_compat(
         api_key=api_key,
         base_url=base_url,
         default_headers=extra_headers or {},
+        timeout=25.0,
     )
     stream = await client.chat.completions.create(
         model=model,
