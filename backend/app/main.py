@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
@@ -34,10 +35,22 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        logger.info("LitLens API starting up…")
+    except Exception as exc:
+        logger.error("Startup error (non-fatal): %s", exc)
+    yield
+    logger.info("LitLens API shutting down.")
+
+
 app = FastAPI(
     title="LitLens API",
     version="0.1.0",
     description="Backend API for LitLens — intelligent document search and analysis.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
