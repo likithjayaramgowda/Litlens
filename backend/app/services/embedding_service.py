@@ -3,7 +3,7 @@ Chunking, embedding, and pgvector storage for paper text.
 
 Chunk size: 512 tokens ≈ 2 048 characters (4 chars/token approximation).
 Overlap:     50 tokens ≈   200 characters.
-Model:       all-MiniLM-L6-v2 (384-dim, cosine similarity, ~80 MB on first load).
+Model:       all-MiniLM-L6-v2 via fastembed/ONNX (384-dim, ~80 MB — no PyTorch).
 Storage:     Supabase paper_chunks table via upsert (chunk_id is the conflict key).
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_CHARS = 2_048   # ≈ 512 tokens
 _OVERLAP_CHARS = 200   # ≈  50 tokens
-_MODEL_NAME = "all-MiniLM-L6-v2"
+_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 _UPSERT_BATCH = 50     # rows per Supabase upsert call
 
 _splitter = RecursiveCharacterTextSplitter(
@@ -33,9 +33,9 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
-        from sentence_transformers import SentenceTransformer  # lazy — keeps startup fast
-        logger.info("Loading embedding model '%s'…", _MODEL_NAME)
-        _model = SentenceTransformer(_MODEL_NAME)
+        from fastembed import TextEmbedding  # lazy — keeps startup fast; ONNX, no PyTorch
+        logger.info("Loading embedding model '%s' via fastembed…", _MODEL_NAME)
+        _model = TextEmbedding(_MODEL_NAME)
         logger.info("Embedding model ready.")
     return _model
 
@@ -86,9 +86,7 @@ def embed_paper(
     print(f"[EMBED] {len(chunk_ids)} chunks ready. Encoding with {_MODEL_NAME}…", flush=True)
 
     model = _get_model()
-    embeddings: list[list[float]] = model.encode(
-        texts, show_progress_bar=False, convert_to_numpy=True
-    ).tolist()
+    embeddings: list[list[float]] = [vec.tolist() for vec in model.embed(texts)]
 
     print(f"[EMBED] Encoding done. Upserting to Supabase pgvector…", flush=True)
 

@@ -105,9 +105,7 @@ def retrieve_chunks(
 
     try:
         model = _get_model()
-        embedding = model.encode(
-            [query], show_progress_bar=False, convert_to_numpy=True
-        )[0].tolist()
+        embedding = next(model.embed([query])).tolist()
         print(f"[RETRIEVAL] Embedding computed OK, running collection.query()…", flush=True)
 
         query_kwargs: dict = {
